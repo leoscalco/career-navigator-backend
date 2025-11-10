@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "career-navigator-backend"
+version = "0.1.0"
+description = "Backend for Career Navigator"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.111.0"
+uvicorn = {extras = ["standard"], version = "^0.29.0"}
+langgraph = "^0.0.30"
+langfuse = "^2.26.2"
+langchain-openai = "^0.1.0"
+python-dotenv = "^1.0.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
