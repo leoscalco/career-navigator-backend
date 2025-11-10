@@ -1,15 +1,16 @@
 from fastapi import APIRouter
 
 from career_navigator.application.health_service import HealthService
-from career_navigator.domain.health import Health
+from career_navigator.api.schemas.health import HealthResponse
 
 router = APIRouter()
 health_service = HealthService()
 
 
-@router.get("/health", response_model=Health, tags=["Health"])
-def health_check() -> Health:
+@router.get("/health", response_model=HealthResponse, tags=["Health"])
+def health_check() -> HealthResponse:
     """
     Checks the health of the application.
     """
-    return health_service.get_health()
+    health = health_service.get_health()
+    return HealthResponse(status=health.status)

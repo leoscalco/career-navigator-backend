@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from career_navigator.api import health
+from career_navigator.api import health, career
 
 app = FastAPI(
     title="Career Navigator API",
@@ -9,3 +9,4 @@ app = FastAPI(
 )
 
 app.include_router(health.router)
+app.include_router(career.router)

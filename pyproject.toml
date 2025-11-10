@@ -10,10 +10,14 @@ package-mode = false
 python = "^3.12"
 fastapi = "^0.111.0"
 uvicorn = {extras = ["standard"], version = "^0.29.0"}
-langgraph = "^0.0.30"
-langfuse = "^2.26.2"
-langchain-openai = "^0.1.0"
+langgraph = "^1.0.2"
+langfuse = "^3.9.1"
+langchain-openai = "^1.0.2"
 python-dotenv = "^1.0.1"
+langchain-groq = "^1.0.0"
+pydantic-settings = "^2.2.1"
+langchain-core = "^1.0.4"
+langchain = "^1.0.5"
 
 
 [build-system]
