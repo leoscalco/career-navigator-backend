@@ -30,7 +30,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
     username = Column(String(100), unique=True, index=True)
-    user_group = Column(Enum(UserGroup), nullable=False)
+    user_group = Column(Enum(UserGroup, values_callable=lambda x: [e.value for e in x]), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -161,7 +161,7 @@ class GeneratedProduct(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
-    product_type = Column(Enum(ProductType), nullable=False)
+    product_type = Column(Enum(ProductType, values_callable=lambda x: [e.value for e in x]), nullable=False)
     content = Column(JSON)  # Flexible JSON structure for different product types
     version = Column(Integer, default=1)  # For versioning CVs, career plans, etc.
     is_active = Column(Boolean, default=True)  # For CVs, only one active version
