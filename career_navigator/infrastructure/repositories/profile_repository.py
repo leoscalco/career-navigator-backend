@@ -12,6 +12,8 @@ class SQLAlchemyProfileRepository(ProfileRepository):
     def create(self, profile: DomainProfile) -> DomainProfile:
         db_profile = DBProfile(
             user_id=profile.user_id,
+            is_draft=profile.is_draft,
+            is_validated=profile.is_validated,
             career_goals=profile.career_goals,
             short_term_goals=profile.short_term_goals,
             long_term_goals=profile.long_term_goals,
@@ -26,6 +28,8 @@ class SQLAlchemyProfileRepository(ProfileRepository):
             desired_job_locations=profile.desired_job_locations,
             languages=profile.languages,
             culture=profile.culture,
+            hobbies=profile.hobbies,
+            additional_info=profile.additional_info,
         )
         self.db.add(db_profile)
         self.db.commit()
@@ -49,6 +53,8 @@ class SQLAlchemyProfileRepository(ProfileRepository):
         if not db_profile:
             raise ValueError(f"Profile with id {profile.id} not found")
         
+        db_profile.is_draft = profile.is_draft
+        db_profile.is_validated = profile.is_validated
         db_profile.career_goals = profile.career_goals
         db_profile.short_term_goals = profile.short_term_goals
         db_profile.long_term_goals = profile.long_term_goals
@@ -63,6 +69,8 @@ class SQLAlchemyProfileRepository(ProfileRepository):
         db_profile.desired_job_locations = profile.desired_job_locations
         db_profile.languages = profile.languages
         db_profile.culture = profile.culture
+        db_profile.hobbies = profile.hobbies
+        db_profile.additional_info = profile.additional_info
         
         self.db.commit()
         self.db.refresh(db_profile)
@@ -81,6 +89,8 @@ class SQLAlchemyProfileRepository(ProfileRepository):
         return DomainProfile(
             id=db_profile.id,
             user_id=db_profile.user_id,
+            is_draft=db_profile.is_draft,
+            is_validated=db_profile.is_validated,
             career_goals=db_profile.career_goals,
             short_term_goals=db_profile.short_term_goals,
             long_term_goals=db_profile.long_term_goals,
@@ -95,6 +105,8 @@ class SQLAlchemyProfileRepository(ProfileRepository):
             desired_job_locations=db_profile.desired_job_locations,
             languages=db_profile.languages,
             culture=db_profile.culture,
+            hobbies=db_profile.hobbies,
+            additional_info=db_profile.additional_info,
             created_at=db_profile.created_at,
             updated_at=db_profile.updated_at,
         )

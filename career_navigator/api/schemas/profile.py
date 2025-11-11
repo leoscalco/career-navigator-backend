@@ -41,6 +41,8 @@ class ProfileUpdate(BaseModel):
 class ProfileResponse(BaseModel):
     id: int
     user_id: int
+    is_draft: bool
+    is_validated: bool
     career_goals: Optional[str]
     short_term_goals: Optional[str]
     long_term_goals: Optional[str]
@@ -55,6 +57,8 @@ class ProfileResponse(BaseModel):
     desired_job_locations: Optional[List[str]]
     languages: Optional[List[Dict[str, str]]]
     culture: Optional[str]
+    hobbies: Optional[List[str]]
+    additional_info: Optional[str]
     created_at: datetime
     updated_at: datetime
 

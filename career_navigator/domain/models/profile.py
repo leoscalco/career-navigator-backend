@@ -6,6 +6,8 @@ from pydantic import BaseModel
 class UserProfile(BaseModel):
     id: Optional[int] = None
     user_id: int
+    is_draft: bool = True
+    is_validated: bool = False
     career_goals: Optional[str] = None
     short_term_goals: Optional[str] = None
     long_term_goals: Optional[str] = None
@@ -20,6 +22,8 @@ class UserProfile(BaseModel):
     desired_job_locations: Optional[List[str]] = None
     languages: Optional[List[Dict[str, str]]] = None
     culture: Optional[str] = None
+    hobbies: Optional[List[str]] = None
+    additional_info: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
