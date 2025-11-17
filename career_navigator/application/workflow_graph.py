@@ -211,19 +211,9 @@ class WorkflowGraph:
         # Compile with checkpointer for state persistence and interrupts
         # Note: interrupt_before will pause BEFORE executing these nodes
         # For direct product generation, we handle approval via human_decision in the node itself
-        # We use a conditional interrupt function to skip interrupts when generating products directly
-        def should_interrupt(node_name: str, state: dict) -> bool:
-            """Conditionally interrupt only when not generating products directly."""
-            # Don't interrupt if we're generating products directly (already validated)
-            if state.get("is_validated") and state.get("product_type"):
-                return False
-            # Otherwise, interrupt at wait_confirmation for human review
-            return node_name == "wait_confirmation"
-        
-        return workflow.compile(
-            checkpointer=self.checkpointer,
-            interrupt_before=should_interrupt
-        )
+        # We don't use interrupt_before for wait_confirmation because it would block direct product generation
+        # Instead, we handle the interrupt logic inside wait_confirmation node itself
+        return workflow.compile(checkpointer=self.checkpointer)
 
     def _parse_node(self, state: WorkflowState) -> WorkflowState:
         """Parse CV or LinkedIn content."""
