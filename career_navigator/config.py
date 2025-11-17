@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     # Groq
     GROQ_API_KEY: str = ""
     
+    # LinkedIn API
+    LINKEDIN_CLIENT_ID: str = ""
+    LINKEDIN_CLIENT_SECRET: str = ""
+    LINKEDIN_ACCESS_TOKEN: str = ""  # OAuth 2.0 access token
+    
     # Database
     DATABASE_URL: str = "postgresql://career_navigator:career_navigator_password@localhost:5433/career_navigator"
 

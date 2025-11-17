@@ -1,0 +1,352 @@
+from typing import Dict, Any, Optional
+from career_navigator.application.workflow_graph import WorkflowGraph
+from career_navigator.domain.repositories.user_repository import UserRepository
+from career_navigator.domain.repositories.profile_repository import ProfileRepository
+from career_navigator.domain.repositories.job_experience_repository import JobExperienceRepository
+from career_navigator.domain.repositories.course_repository import CourseRepository
+from career_navigator.domain.repositories.academic_repository import AcademicRepository
+from career_navigator.domain.repositories.product_repository import ProductRepository
+from career_navigator.domain.llm import LanguageModel
+from career_navigator.domain.models.product import GeneratedProduct
+from career_navigator.domain.models.product_type import ProductType
+
+
+class WorkflowService:
+    """Orchestrates the CV/LinkedIn parsing and CV generation workflow using LangGraph."""
+
+    def __init__(
+        self,
+        llm: LanguageModel,
+        user_repository: UserRepository,
+        profile_repository: ProfileRepository,
+        job_repository: JobExperienceRepository,
+        course_repository: CourseRepository,
+        academic_repository: AcademicRepository,
+        product_repository: ProductRepository,
+    ):
+        self.llm = llm
+        self.user_repository = user_repository
+        self.profile_repository = profile_repository
+        self.job_repository = job_repository
+        self.course_repository = course_repository
+        self.academic_repository = academic_repository
+        self.product_repository = product_repository
+        
+        # Initialize the workflow graph
+        self.workflow_graph = WorkflowGraph(
+            llm=llm,
+            user_repository=user_repository,
+            profile_repository=profile_repository,
+            job_repository=job_repository,
+            course_repository=course_repository,
+            academic_repository=academic_repository,
+            product_repository=product_repository,
+        )
+
+    def parse_and_save_cv(
+        self, user_id: Optional[int], cv_content: str, linkedin_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Step 1: Parse CV content and save as draft using workflow graph.
+        
+        If user_id is None, a new user will be created from the parsed CV data.
+        
+        Returns:
+        - user_id: ID of created/existing user
+        - profile_id: ID of created/updated profile
+        - job_experience_ids: List of created job experience IDs
+        - course_ids: List of created course IDs
+        - academic_record_ids: List of created academic record IDs
+        """
+        initial_state = {
+            "user_id": user_id,  # Can be None
+            "input_type": "cv",
+            "cv_content": cv_content,
+            "linkedin_url": linkedin_url,
+            "is_confirmed": False,
+        }
+        
+        result = self.workflow_graph.run(initial_state)
+        
+        if result.get("error"):
+            raise ValueError(result["error"])
+        
+        if not result.get("user_id"):
+            raise ValueError("User ID was not created during parsing")
+        
+        return {
+            "user_id": result["user_id"],
+            "profile_id": result["profile_id"],
+            "job_experience_ids": result["job_experience_ids"],
+            "course_ids": result["course_ids"],
+            "academic_record_ids": result["academic_record_ids"],
+            "is_draft": result["is_draft"],
+        }
+
+    def parse_and_save_linkedin(
+        self, user_id: Optional[int], linkedin_data: str, linkedin_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Step 1: Parse LinkedIn data and save as draft using workflow graph.
+        
+        If user_id is None, a new user will be created from the parsed LinkedIn data.
+        """
+        initial_state = {
+            "user_id": user_id,  # Can be None
+            "input_type": "linkedin",
+            "linkedin_data": linkedin_data,
+            "linkedin_url": linkedin_url,
+            "is_confirmed": False,
+        }
+        
+        result = self.workflow_graph.run(initial_state)
+        
+        if result.get("error"):
+            raise ValueError(result["error"])
+        
+        if not result.get("user_id"):
+            raise ValueError("User ID was not created during parsing")
+        
+        return {
+            "user_id": result["user_id"],
+            "profile_id": result["profile_id"],
+            "job_experience_ids": result["job_experience_ids"],
+            "course_ids": result["course_ids"],
+            "academic_record_ids": result["academic_record_ids"],
+            "is_draft": result["is_draft"],
+        }
+
+    def validate_profile(self, user_id: int) -> Dict[str, Any]:
+        """
+        Step 3: Validate profile data using guardrails.
+        
+        Returns validation report.
+        """
+        # Get current profile state
+        profile = self.profile_repository.get_by_user_id(user_id)
+        if not profile:
+            raise ValueError(f"Profile not found for user {user_id}")
+        
+        # Get all user data for validation
+        job_experiences = self.job_repository.get_by_user_id(user_id)
+        courses = self.course_repository.get_by_user_id(user_id)
+        academic_records = self.academic_repository.get_by_user_id(user_id)
+        
+        # Prepare validation data
+        validation_data = {
+            "profile": profile.model_dump(),
+            "job_experiences": [j.model_dump() for j in job_experiences],
+            "courses": [c.model_dump() for c in courses],
+            "academic_records": [a.model_dump() for a in academic_records],
+        }
+        
+        # Run validation directly (not through full workflow graph)
+        from career_navigator.domain.prompts import GUARDRAIL_VALIDATION_PROMPT
+        import json
+        
+        prompt = GUARDRAIL_VALIDATION_PROMPT.format(
+            profile_data=json.dumps(validation_data, indent=2, default=str)
+        )
+        
+        try:
+            response = self.llm.generate(prompt)
+            # Extract JSON from response - handle markdown code blocks and extra text
+            response = response.strip()
+            
+            # Remove markdown code blocks
+            if response.startswith("```json"):
+                response = response[7:]
+            elif response.startswith("```"):
+                response = response[3:]
+            if response.endswith("```"):
+                response = response[:-3]
+            response = response.strip()
+            
+            # Try to find JSON object boundaries (handle extra text before/after)
+            # Look for first { and last }
+            first_brace = response.find('{')
+            last_brace = response.rfind('}')
+            
+            if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+                # Extract just the JSON object
+                json_str = response[first_brace:last_brace + 1]
+            else:
+                json_str = response
+            
+            validation_report = json.loads(json_str)
+            
+            # Update profile validation status
+            profile.is_validated = validation_report.get("is_valid", False)
+            self.profile_repository.update(profile)
+            
+            return validation_report
+        except (json.JSONDecodeError, KeyError) as e:
+            raise ValueError(f"Failed to validate profile: {str(e)}")
+
+    def generate_and_save_cv(self, user_id: int) -> GeneratedProduct:
+        """
+        Generate CV and save as product via workflow graph.
+        
+        Returns the generated product.
+        """
+        return self._generate_product(user_id, "cv")
+    
+    def generate_and_save_career_path(self, user_id: int) -> GeneratedProduct:
+        """Generate career path and save as product."""
+        return self._generate_product(user_id, "career_path")
+    
+    def generate_and_save_career_plan_1y(self, user_id: int) -> GeneratedProduct:
+        """Generate 1-year career plan and save as product."""
+        return self._generate_product(user_id, "career_plan_1y")
+    
+    def generate_and_save_career_plan_3y(self, user_id: int) -> GeneratedProduct:
+        """Generate 3-year career plan and save as product."""
+        return self._generate_product(user_id, "career_plan_3y")
+    
+    def generate_and_save_career_plan_5y(self, user_id: int) -> GeneratedProduct:
+        """Generate 5+ year career plan and save as product."""
+        return self._generate_product(user_id, "career_plan_5y")
+    
+    def generate_and_save_linkedin_export(self, user_id: int) -> GeneratedProduct:
+        """Generate LinkedIn export and save as product."""
+        return self._generate_product(user_id, "linkedin_export")
+    
+    def _generate_product(self, user_id: int, product_type: str) -> GeneratedProduct:
+        """
+        Generic method to generate any product type.
+        
+        Args:
+            user_id: User ID
+            product_type: One of "cv", "career_path", "career_plan_1y", "career_plan_3y", "career_plan_5y", "linkedin_export"
+        """
+        profile = self.profile_repository.get_by_user_id(user_id)
+        if not profile:
+            raise ValueError(f"Profile not found for user {user_id}")
+        
+        if not profile.is_validated:
+            raise ValueError("Profile must be validated before generating products")
+        
+        # Run workflow with product type
+        # Skip parsing/validation steps and go directly to product generation
+        initial_state = {
+            "user_id": user_id,
+            "input_type": "cv",  # Doesn't matter, we're past parsing
+            "product_type": product_type,
+            "is_confirmed": True,
+            "is_validated": True,
+            "human_decision": "approve",  # Auto-approve product saving
+        }
+        
+        result = self.workflow_graph.run(initial_state)
+        
+        if result.get("error"):
+            error_msg = result["error"]
+            current_step = result.get("current_step", "unknown")
+            raise ValueError(f"Workflow error at step '{current_step}': {error_msg}")
+        
+        if not result.get("product_id"):
+            # Provide more details about what went wrong
+            current_step = result.get("current_step", "unknown")
+            generated_content = result.get(f"generated_{product_type}")
+            if not generated_content:
+                raise ValueError(
+                    f"Failed to generate {product_type} product: "
+                    f"Content was not generated. Current step: {current_step}. "
+                    f"State: {result.get('is_validated')=}, {result.get('is_confirmed')=}, "
+                    f"{result.get('needs_human_review')=}"
+                )
+            else:
+                raise ValueError(
+                    f"Failed to generate {product_type} product: "
+                    f"Product was generated but not saved. Current step: {current_step}. "
+                    f"State: {result.get('is_validated')=}, {result.get('is_confirmed')=}, "
+                    f"{result.get('needs_human_review')=}, human_decision={result.get('human_decision')}"
+                )
+        
+        # Retrieve the created product
+        product = self.product_repository.get_by_id(result["product_id"])
+        if not product:
+            raise ValueError("Product was created but not found")
+        
+        return product
+    
+    def get_workflow_status(self, user_id: int) -> Dict[str, Any]:
+        """
+        Get current workflow status for a user.
+        
+        Returns:
+            Dictionary with workflow status, current step, and pending actions
+        """
+        thread_id = f"user_{user_id}"
+        state = self.workflow_graph.get_state(thread_id)
+        
+        if not state:
+            # Check if profile exists
+            profile = self.profile_repository.get_by_user_id(user_id)
+            if not profile:
+                return {
+                    "status": "not_started",
+                    "message": "No workflow started for this user",
+                }
+            
+            return {
+                "status": "completed",
+                "current_step": "completed",
+                "is_draft": profile.is_draft,
+                "is_validated": profile.is_validated,
+            }
+        
+        return {
+            "status": "in_progress",
+            "current_step": state.get("current_step", "unknown"),
+            "needs_human_review": state.get("needs_human_review", False),
+            "is_draft": state.get("is_draft", False),
+            "is_validated": state.get("is_validated", False),
+            "error": state.get("error"),
+        }
+    
+    def resume_workflow(self, user_id: int, human_decision: str) -> Dict[str, Any]:
+        """
+        Resume workflow after human decision.
+        
+        Args:
+            user_id: User ID
+            human_decision: "approve", "edit", or "reject"
+            
+        Returns:
+            Updated workflow state
+        """
+        thread_id = f"user_{user_id}"
+        result = self.workflow_graph.resume_workflow(thread_id, human_decision)
+        return result
+
+    def confirm_draft(self, user_id: int) -> Dict[str, Any]:
+        """
+        Step 2: User confirms draft data is correct.
+        Moves profile from draft to ready for validation.
+        """
+        profile = self.profile_repository.get_by_user_id(user_id)
+        if not profile:
+            raise ValueError(f"Profile not found for user {user_id}")
+        
+        profile.is_draft = False
+        updated_profile = self.profile_repository.update(profile)
+        
+        return {
+            "profile_id": updated_profile.id,
+            "is_draft": False,
+            "message": "Draft confirmed, ready for validation",
+        }
+    
+    def get_workflow_graph_image(self, format: str = "png") -> bytes:
+        """
+        Generate a visual representation of the workflow graph.
+        
+        Args:
+            format: Image format ("png", "svg", or "jpg")
+            
+        Returns:
+            Image bytes
+        """
+        return self.workflow_graph.get_graph_image(format)
+

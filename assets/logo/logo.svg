@@ -1,0 +1,41 @@
+<svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .primary-blue { fill: #2962FF; }
+      .accent-orange { fill: #FF9800; }
+      .dark-blue { fill: #193C9B; }
+      .white { fill: #FFFFFF; }
+      .stroke-dark { stroke: #193C9B; stroke-width: 2; }
+      .stroke-primary { stroke: #2962FF; stroke-width: 1.5; }
+    </style>
+  </defs>
+  
+  <!-- Outer circle (compass base) -->
+  <circle cx="256" cy="256" r="180" class="primary-blue" stroke="#193C9B" stroke-width="4"/>
+  
+  <!-- Inner circle -->
+  <circle cx="256" cy="256" r="108" class="white" stroke="#2962FF" stroke-width="3"/>
+  
+  <!-- Compass arrow pointing up (career growth) -->
+  <path d="M 256 76 L 220 140 L 236 156 L 236 200 L 276 200 L 276 156 L 292 140 Z" 
+        class="accent-orange" stroke="#193C9B" stroke-width="2"/>
+  
+  <!-- Cardinal direction markers -->
+  <!-- North -->
+  <text x="256" y="50" font-family="Arial, sans-serif" font-size="32" font-weight="bold" 
+        text-anchor="middle" fill="#193C9B">N</text>
+  
+  <!-- East -->
+  <circle cx="436" cy="256" r="8" class="dark-blue"/>
+  
+  <!-- West -->
+  <circle cx="76" cy="256" r="8" class="dark-blue"/>
+  
+  <!-- South -->
+  <circle cx="256" cy="436" r="8" class="dark-blue"/>
+  
+  <!-- Text -->
+  <text x="256" y="420" font-family="Arial, sans-serif" font-size="36" font-weight="bold" 
+        text-anchor="middle" fill="#193C9B">Career Navigator</text>
+</svg>
+

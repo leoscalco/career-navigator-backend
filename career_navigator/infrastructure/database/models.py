@@ -24,6 +24,13 @@ class UserGroup(str, PyEnum):
     INEXPERIENCED_NO_GOAL = "inexperienced_no_goal"
 
 
+class CareerGoalType(str, PyEnum):
+    CONTINUE_PATH = "continue_path"  # Continue current career path
+    CHANGE_CAREER = "change_career"  # Change to a different career
+    CHANGE_AREA = "change_area"  # Change area/domain within same career
+    EXPLORE_OPTIONS = "explore_options"  # Explore different options
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -48,10 +55,16 @@ class UserProfile(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False)
 
+    # Status
+    is_draft = Column(Boolean, default=True)  # True until user confirms
+    is_validated = Column(Boolean, default=False)  # True after guardrail validation
+
     # Goals and aspirations
     career_goals = Column(Text)
+    career_goal_type = Column(Enum(CareerGoalType, values_callable=lambda x: [e.value for e in x]), default=CareerGoalType.CONTINUE_PATH)  # Type of career goal
     short_term_goals = Column(Text)
     long_term_goals = Column(Text)
+    job_search_locations = Column(JSON)  # Where user is actively searching for jobs
 
     # Documents
     cv_content = Column(Text)  # Original CV content
@@ -67,6 +80,8 @@ class UserProfile(Base):
     desired_job_locations = Column(JSON)  # List of desired locations
     languages = Column(JSON)  # List of languages with proficiency levels
     culture = Column(String(100))
+    hobbies = Column(JSON)  # List of hobbies/interests
+    additional_info = Column(Text)  # Any additional relevant information
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
