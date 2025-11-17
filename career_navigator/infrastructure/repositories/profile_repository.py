@@ -10,13 +10,21 @@ class SQLAlchemyProfileRepository(ProfileRepository):
         self.db = db
 
     def create(self, profile: DomainProfile) -> DomainProfile:
+        # Ensure career_goal_type defaults to CONTINUE_PATH if not set
+        career_goal_type = profile.career_goal_type
+        if not career_goal_type:
+            from career_navigator.domain.models.career_goal_type import CareerGoalType
+            career_goal_type = CareerGoalType.CONTINUE_PATH
+        
         db_profile = DBProfile(
             user_id=profile.user_id,
             is_draft=profile.is_draft,
             is_validated=profile.is_validated,
             career_goals=profile.career_goals,
+            career_goal_type=career_goal_type.value if hasattr(career_goal_type, 'value') else career_goal_type,
             short_term_goals=profile.short_term_goals,
             long_term_goals=profile.long_term_goals,
+            job_search_locations=profile.job_search_locations,
             cv_content=profile.cv_content,
             linkedin_profile_url=profile.linkedin_profile_url,
             linkedin_profile_data=profile.linkedin_profile_data,
@@ -56,8 +64,12 @@ class SQLAlchemyProfileRepository(ProfileRepository):
         db_profile.is_draft = profile.is_draft
         db_profile.is_validated = profile.is_validated
         db_profile.career_goals = profile.career_goals
+        if profile.career_goal_type is not None:
+            db_profile.career_goal_type = profile.career_goal_type.value if hasattr(profile.career_goal_type, 'value') else profile.career_goal_type
         db_profile.short_term_goals = profile.short_term_goals
         db_profile.long_term_goals = profile.long_term_goals
+        if profile.job_search_locations is not None:
+            db_profile.job_search_locations = profile.job_search_locations
         db_profile.cv_content = profile.cv_content
         db_profile.linkedin_profile_url = profile.linkedin_profile_url
         db_profile.linkedin_profile_data = profile.linkedin_profile_data
@@ -86,14 +98,26 @@ class SQLAlchemyProfileRepository(ProfileRepository):
         return True
 
     def _to_domain(self, db_profile: DBProfile) -> DomainProfile:
+        from career_navigator.domain.models.career_goal_type import CareerGoalType
+        
+        # Convert career_goal_type from DB enum to domain enum
+        career_goal_type = CareerGoalType.CONTINUE_PATH  # Default
+        if db_profile.career_goal_type:
+            try:
+                career_goal_type = CareerGoalType(db_profile.career_goal_type)
+            except (ValueError, AttributeError):
+                career_goal_type = CareerGoalType.CONTINUE_PATH
+        
         return DomainProfile(
             id=db_profile.id,
             user_id=db_profile.user_id,
             is_draft=db_profile.is_draft,
             is_validated=db_profile.is_validated,
             career_goals=db_profile.career_goals,
+            career_goal_type=career_goal_type,
             short_term_goals=db_profile.short_term_goals,
             long_term_goals=db_profile.long_term_goals,
+            job_search_locations=db_profile.job_search_locations,
             cv_content=db_profile.cv_content,
             linkedin_profile_url=db_profile.linkedin_profile_url,
             linkedin_profile_data=db_profile.linkedin_profile_data,

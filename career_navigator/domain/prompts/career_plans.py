@@ -3,19 +3,23 @@ You are a career planning expert. Create a detailed 1-year career plan for the u
 
 User Profile:
 - Career Goals: {career_goals}
+- Career Goal Type: {career_goal_type}
 - Current Role: {current_role}
 - Skills: {skills}
 - Experience Level: {experience_level}
 - User Group: {user_group}
+- Job Search Locations: {job_search_locations}
 
 Create a comprehensive 1-year career plan broken down by quarters (Q1, Q2, Q3, Q4).
 
 For each quarter, include:
-- Specific goals and objectives
+- Specific goals and objectives aligned with their goal type ({career_goal_type})
 - Skills to develop
-- Courses or certifications to complete
+- Detailed courses or certifications to complete (with providers and why they're relevant)
 - Projects or experiences to pursue
 - Networking activities
+- Job search strategies and target companies
+- Tips and actionable advice
 - Milestones and success metrics
 
 Return the response as structured JSON:
@@ -25,9 +29,23 @@ Return the response as structured JSON:
         "Q1": {{
             "goals": [<list of strings>],
             "skills_to_develop": [<list of strings>],
-            "courses": [<list of strings>],
+            "courses": [
+                {{
+                    "course_name": <string>,
+                    "provider": <string>,
+                    "description": <string>,
+                    "why_relevant": <string>,
+                    "estimated_duration": <string>
+                }}
+            ],
             "projects": [<list of strings>],
             "networking": [<list of strings>],
+            "job_search": {{
+                "target_companies": [<list of strings>],
+                "target_positions": [<list of strings>],
+                "strategies": [<list of strings>]
+            }},
+            "tips": [<list of strings>],
             "milestones": [<list of strings>]
         }},
         "Q2": {{...}},
@@ -35,7 +53,8 @@ Return the response as structured JSON:
         "Q4": {{...}}
     }},
     "key_metrics": [<list of strings>],
-    "success_criteria": <string>
+    "success_criteria": <string>,
+    "overall_tips": [<list of strings>]
 }}
 
 Return ONLY valid JSON.
@@ -46,21 +65,26 @@ You are a career planning expert. Create a detailed 3-year career plan for the u
 
 User Profile:
 - Career Goals: {career_goals}
+- Career Goal Type: {career_goal_type}
 - Long-term Goals: {long_term_goals}
 - Current Role: {current_role}
 - Skills: {skills}
 - Experience Level: {experience_level}
 - User Group: {user_group}
+- Job Search Locations: {job_search_locations}
 
 Create a comprehensive 3-year career plan broken down by years (Year 1, Year 2, Year 3).
 
 For each year, include:
-- Major career milestones
+- Major career milestones aligned with goal type ({career_goal_type})
 - Target roles or positions
 - Skills and competencies to develop
-- Education and certifications
+- Detailed education and certifications (with providers)
 - Professional development activities
 - Career transitions or moves
+- Target companies and organizations
+- Courses and learning paths
+- Tips and strategies
 - Expected achievements
 
 Return the response as structured JSON:
@@ -71,15 +95,25 @@ Return the response as structured JSON:
             "target_role": <string>,
             "major_milestones": [<list of strings>],
             "skills_to_develop": [<list of strings>],
-            "education": [<list of strings>],
+            "education": [
+                {{
+                    "course_name": <string>,
+                    "provider": <string>,
+                    "description": <string>,
+                    "why_relevant": <string>
+                }}
+            ],
             "professional_development": [<list of strings>],
+            "target_companies": [<list of strings>],
+            "tips": [<list of strings>],
             "expected_achievements": [<list of strings>]
         }},
         "Year 2": {{...}},
         "Year 3": {{...}}
     }},
     "long_term_vision": <string>,
-    "key_metrics": [<list of strings>]
+    "key_metrics": [<list of strings>],
+    "overall_strategy": <string>
 }}
 
 Return ONLY valid JSON.
@@ -90,13 +124,15 @@ You are a career planning expert. Create a strategic 5+ year career plan for the
 
 User Profile:
 - Career Goals: {career_goals}
+- Career Goal Type: {career_goal_type}
 - Long-term Goals: {long_term_goals}
 - Current Role: {current_role}
 - Skills: {skills}
 - Experience Level: {experience_level}
 - User Group: {user_group}
+- Job Search Locations: {job_search_locations}
 
-Create a strategic 5+ year career plan with a long-term vision.
+Create a strategic 5+ year career plan with a long-term vision aligned with goal type ({career_goal_type}).
 
 Structure:
 - Vision statement for 5+ years
@@ -106,6 +142,9 @@ Structure:
 - Industry or domain expertise to develop
 - Potential career pivots or transitions
 - Leadership and impact goals
+- Strategic learning paths and courses
+- Target organizations and companies
+- Tips and strategies for long-term success
 
 Return the response as structured JSON:
 {{
@@ -117,14 +156,25 @@ Return the response as structured JSON:
             "target_role": <string>,
             "key_objectives": [<list of strings>],
             "skills_focus": [<list of strings>],
-            "strategic_moves": [<list of strings>]
+            "strategic_learning": [
+                {{
+                    "course_name": <string>,
+                    "provider": <string>,
+                    "description": <string>,
+                    "why_relevant": <string>
+                }}
+            ],
+            "target_companies": [<list of strings>],
+            "strategic_moves": [<list of strings>],
+            "tips": [<list of strings>]
         }}
     ],
     "target_senior_roles": [<list of strings>],
     "strategic_competencies": [<list of strings>],
     "industry_expertise": [<list of strings>],
     "leadership_goals": [<list of strings>],
-    "long_term_impact": <string>
+    "long_term_impact": <string>,
+    "strategic_advice": [<list of strings>]
 }}
 
 Return ONLY valid JSON.

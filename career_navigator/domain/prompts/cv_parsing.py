@@ -6,6 +6,8 @@ Return a JSON object with the following structure:
 
 {{
     "personal_info": {{
+        "name": <string or null>,
+        "email": <string or null>,
         "age": <integer or null>,
         "birth_country": <string or null>,
         "birth_city": <string or null>,

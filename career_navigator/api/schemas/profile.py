@@ -1,13 +1,16 @@
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
+from career_navigator.domain.models.career_goal_type import CareerGoalType
 
 
 class ProfileCreate(BaseModel):
     user_id: int
     career_goals: Optional[str] = None
+    career_goal_type: CareerGoalType = CareerGoalType.CONTINUE_PATH  # Default to continue path
     short_term_goals: Optional[str] = None
     long_term_goals: Optional[str] = None
+    job_search_locations: Optional[List[str]] = None  # Where user is searching for jobs
     cv_content: Optional[str] = None
     linkedin_profile_url: Optional[str] = None
     linkedin_profile_data: Optional[Dict[str, Any]] = None
@@ -23,8 +26,10 @@ class ProfileCreate(BaseModel):
 
 class ProfileUpdate(BaseModel):
     career_goals: Optional[str] = None
+    career_goal_type: Optional[CareerGoalType] = None
     short_term_goals: Optional[str] = None
     long_term_goals: Optional[str] = None
+    job_search_locations: Optional[List[str]] = None
     cv_content: Optional[str] = None
     linkedin_profile_url: Optional[str] = None
     linkedin_profile_data: Optional[Dict[str, Any]] = None
@@ -44,8 +49,10 @@ class ProfileResponse(BaseModel):
     is_draft: bool
     is_validated: bool
     career_goals: Optional[str]
+    career_goal_type: CareerGoalType
     short_term_goals: Optional[str]
     long_term_goals: Optional[str]
+    job_search_locations: Optional[List[str]]
     cv_content: Optional[str]
     linkedin_profile_url: Optional[str]
     linkedin_profile_data: Optional[Dict[str, Any]]
