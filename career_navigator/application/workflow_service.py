@@ -118,7 +118,7 @@ class WorkflowService:
 
     def validate_profile(self, user_id: int) -> Dict[str, Any]:
         """
-        Step 3: Validate profile data using guardrails via workflow graph.
+        Step 3: Validate profile data using guardrails.
         
         Returns validation report.
         """
@@ -127,19 +127,61 @@ class WorkflowService:
         if not profile:
             raise ValueError(f"Profile not found for user {user_id}")
         
-        # Run validation step through the graph
-        initial_state = {
-            "user_id": user_id,
-            "input_type": "cv",  # Doesn't matter for validation
-            "is_confirmed": True,  # Skip to validation
+        # Get all user data for validation
+        job_experiences = self.job_repository.get_by_user_id(user_id)
+        courses = self.course_repository.get_by_user_id(user_id)
+        academic_records = self.academic_repository.get_by_user_id(user_id)
+        
+        # Prepare validation data
+        validation_data = {
+            "profile": profile.model_dump(),
+            "job_experiences": [j.model_dump() for j in job_experiences],
+            "courses": [c.model_dump() for c in courses],
+            "academic_records": [a.model_dump() for a in academic_records],
         }
         
-        result = self.workflow_graph.run(initial_state)
+        # Run validation directly (not through full workflow graph)
+        from career_navigator.domain.prompts import GUARDRAIL_VALIDATION_PROMPT
+        import json
         
-        if result.get("error"):
-            raise ValueError(result["error"])
+        prompt = GUARDRAIL_VALIDATION_PROMPT.format(
+            profile_data=json.dumps(validation_data, indent=2, default=str)
+        )
         
-        return result.get("validation_report", {})
+        try:
+            response = self.llm.generate(prompt)
+            # Extract JSON from response - handle markdown code blocks and extra text
+            response = response.strip()
+            
+            # Remove markdown code blocks
+            if response.startswith("```json"):
+                response = response[7:]
+            elif response.startswith("```"):
+                response = response[3:]
+            if response.endswith("```"):
+                response = response[:-3]
+            response = response.strip()
+            
+            # Try to find JSON object boundaries (handle extra text before/after)
+            # Look for first { and last }
+            first_brace = response.find('{')
+            last_brace = response.rfind('}')
+            
+            if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+                # Extract just the JSON object
+                json_str = response[first_brace:last_brace + 1]
+            else:
+                json_str = response
+            
+            validation_report = json.loads(json_str)
+            
+            # Update profile validation status
+            profile.is_validated = validation_report.get("is_valid", False)
+            self.profile_repository.update(profile)
+            
+            return validation_report
+        except (json.JSONDecodeError, KeyError) as e:
+            raise ValueError(f"Failed to validate profile: {str(e)}")
 
     def generate_and_save_cv(self, user_id: int) -> GeneratedProduct:
         """
@@ -185,21 +227,41 @@ class WorkflowService:
             raise ValueError("Profile must be validated before generating products")
         
         # Run workflow with product type
+        # Skip parsing/validation steps and go directly to product generation
         initial_state = {
             "user_id": user_id,
             "input_type": "cv",  # Doesn't matter, we're past parsing
             "product_type": product_type,
             "is_confirmed": True,
             "is_validated": True,
+            "human_decision": "approve",  # Auto-approve product saving
         }
         
         result = self.workflow_graph.run(initial_state)
         
         if result.get("error"):
-            raise ValueError(result["error"])
+            error_msg = result["error"]
+            current_step = result.get("current_step", "unknown")
+            raise ValueError(f"Workflow error at step '{current_step}': {error_msg}")
         
         if not result.get("product_id"):
-            raise ValueError(f"Failed to generate {product_type} product")
+            # Provide more details about what went wrong
+            current_step = result.get("current_step", "unknown")
+            generated_content = result.get(f"generated_{product_type}")
+            if not generated_content:
+                raise ValueError(
+                    f"Failed to generate {product_type} product: "
+                    f"Content was not generated. Current step: {current_step}. "
+                    f"State: {result.get('is_validated')=}, {result.get('is_confirmed')=}, "
+                    f"{result.get('needs_human_review')=}"
+                )
+            else:
+                raise ValueError(
+                    f"Failed to generate {product_type} product: "
+                    f"Product was generated but not saved. Current step: {current_step}. "
+                    f"State: {result.get('is_validated')=}, {result.get('is_confirmed')=}, "
+                    f"{result.get('needs_human_review')=}, human_decision={result.get('human_decision')}"
+                )
         
         # Retrieve the created product
         product = self.product_repository.get_by_id(result["product_id"])

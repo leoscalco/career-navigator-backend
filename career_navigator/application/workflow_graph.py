@@ -150,12 +150,13 @@ class WorkflowGraph:
         # Save Draft → Wait for Confirmation (HUMAN-IN-THE-LOOP CHECKPOINT with interrupt)
         workflow.add_edge("save_draft", "wait_confirmation")
         
-        # After confirmation, validate
+        # After confirmation, validate or skip to product generation
         workflow.add_conditional_edges(
             "wait_confirmation",
-            self._should_validate,
+            self._should_validate_or_skip_to_product,
             {
                 "validate": "validate",
+                "skip_to_product": "select_product_type",  # Skip directly to product generation
                 "skip": END,
             }
         )
@@ -164,6 +165,7 @@ class WorkflowGraph:
         workflow.add_edge("validate", "check_validation")
         
         # Check validation → Select product type or retry
+        # Also route directly to select_product_type if already validated and product_type is set
         workflow.add_conditional_edges(
             "check_validation",
             self._should_generate_product,
@@ -173,6 +175,9 @@ class WorkflowGraph:
                 "end": END,
             }
         )
+        
+        # Add conditional entry point: if already validated and product_type is set, skip to select_product_type
+        # This is handled by modifying parse node to check conditions
         
         # Select product type → Route to appropriate generator
         workflow.add_conditional_edges(
@@ -204,19 +209,57 @@ class WorkflowGraph:
         workflow.add_edge("error_handler", END)
         
         # Compile with checkpointer for state persistence and interrupts
-        return workflow.compile(checkpointer=self.checkpointer, interrupt_before=["wait_confirmation", "save_product"])
+        # Note: interrupt_before will pause BEFORE executing these nodes
+        # For direct product generation, we handle approval via human_decision in the node itself
+        # We use a conditional interrupt function to skip interrupts when generating products directly
+        def should_interrupt(node_name: str, state: dict) -> bool:
+            """Conditionally interrupt only when not generating products directly."""
+            # Don't interrupt if we're generating products directly (already validated)
+            if state.get("is_validated") and state.get("product_type"):
+                return False
+            # Otherwise, interrupt at wait_confirmation for human review
+            return node_name == "wait_confirmation"
+        
+        return workflow.compile(
+            checkpointer=self.checkpointer,
+            interrupt_before=should_interrupt
+        )
 
     def _parse_node(self, state: WorkflowState) -> WorkflowState:
         """Parse CV or LinkedIn content."""
         try:
             state["current_step"] = "parsing"
             
+            # Skip parsing if we're already past this step (e.g., for product generation)
+            # If profile is validated and product_type is set, skip directly to product generation
+            user_id = state.get("user_id")
+            if state.get("is_validated") and state.get("product_type") and user_id:
+                profile = self.profile_repository.get_by_user_id(user_id)
+                if profile and profile.is_validated:
+                    # Skip all parsing/validation steps, go directly to product generation
+                    # Set parsed_data to None (not empty dict) so save_draft can detect the skip
+                    state["parsed_data"] = None
+                    state["is_confirmed"] = True  # Ensure confirmation is set
+                    state["error"] = None
+                    return state
+            
+            # Skip parsing if we're already past this step (e.g., for validation-only calls)
+            # Check if profile already exists and we're just validating
+            user_id = state.get("user_id")
+            if state.get("is_confirmed") and user_id:
+                profile = self.profile_repository.get_by_user_id(user_id)
+                if profile and not state.get("cv_content") and not state.get("linkedin_data"):
+                    # Skip parsing, go directly to next step
+                    state["parsed_data"] = None  # None, will be skipped in save_draft
+                    state["error"] = None
+                    return state
+            
             if state["input_type"] == "cv":
-                if not state["cv_content"]:
+                if not state.get("cv_content"):
                     raise ValueError("CV content is required")
                 prompt = CV_PARSING_PROMPT.format(cv_content=state["cv_content"])
             else:  # linkedin
-                if not state["linkedin_data"]:
+                if not state.get("linkedin_data"):
                     raise ValueError("LinkedIn data is required")
                 prompt = LINKEDIN_PARSING_PROMPT.format(linkedin_data=state["linkedin_data"])
             
@@ -243,8 +286,38 @@ class WorkflowGraph:
             return state
         
         try:
-            state["current_step"] = "saving_draft"
             parsed_data = state.get("parsed_data")
+            user_id = state.get("user_id")
+            
+            # Skip if we're generating products directly (already validated, product_type set)
+            # This check must come FIRST before setting current_step
+            if state.get("is_validated") and state.get("product_type") and user_id:
+                # Check if parsed_data is None (indicating we're skipping parsing)
+                if parsed_data is None:
+                    profile = self.profile_repository.get_by_user_id(user_id)
+                    if profile and profile.is_validated:
+                        state["profile_id"] = profile.id
+                        state["is_draft"] = profile.is_draft
+                        state["is_confirmed"] = True
+                        state["is_validated"] = profile.is_validated
+                        state["current_step"] = "skipped_draft"  # Mark as skipped
+                        state["error"] = None
+                        return state
+            
+            # Skip if we're validating an existing profile (no new parsed data)
+            if parsed_data is None and state.get("is_confirmed") and user_id:
+                # Profile already exists, just mark as ready for validation
+                profile = self.profile_repository.get_by_user_id(user_id)
+                if profile:
+                    state["profile_id"] = profile.id
+                    state["is_draft"] = profile.is_draft
+                    state["current_step"] = "skipped_draft"  # Mark as skipped
+                    state["error"] = None
+                    return state
+            
+            # Normal flow: save parsed data
+            state["current_step"] = "saving_draft"
+            
             if not parsed_data:
                 raise ValueError("No parsed data to save")
             
@@ -330,6 +403,15 @@ class WorkflowGraph:
             profile_data["is_draft"] = True
             profile_data["is_validated"] = False
             
+            # Set default career_goal_type if not provided
+            if "career_goal_type" not in profile_data or not profile_data["career_goal_type"]:
+                from career_navigator.domain.models.career_goal_type import CareerGoalType
+                profile_data["career_goal_type"] = CareerGoalType.CONTINUE_PATH
+            
+            # Set default career_goals if empty
+            if not profile_data.get("career_goals"):
+                profile_data["career_goals"] = "Continue current career path"
+            
             if state["input_type"] == "cv":
                 profile_data["cv_content"] = state["cv_content"]
             else:
@@ -396,11 +478,18 @@ class WorkflowGraph:
     def _wait_confirmation_node(self, state: WorkflowState) -> WorkflowState:
         """
         Wait for user confirmation (human-in-the-loop checkpoint).
-        
+
         This node is marked with interrupt_before, so the workflow will pause here.
         The workflow can be resumed after human review via the API.
         """
         state["current_step"] = "waiting_confirmation"
+        
+        # Skip if we're generating products directly (already validated, product_type set)
+        if state.get("is_validated") and state.get("product_type"):
+            state["is_confirmed"] = True
+            state["needs_human_review"] = False
+            return state
+        
         state["needs_human_review"] = True
         
         # Check if human has made a decision
@@ -531,8 +620,11 @@ class WorkflowGraph:
             courses = self.course_repository.get_by_user_id(state["user_id"])
             academic_records = self.academic_repository.get_by_user_id(state["user_id"])
             
+            # Prepare profile data with normalized career_goal_type
+            profile_dict = self._normalize_career_goal_type(profile.model_dump())
+            
             career_path = self.career_planning_service.generate_career_path(
-                profile_data=profile.model_dump(),
+                profile_data=profile_dict,
                 job_experiences=[j.model_dump() for j in job_experiences],
                 academic_records=[a.model_dump() for a in academic_records],
                 courses=[c.model_dump() for c in courses],
@@ -567,8 +659,11 @@ class WorkflowGraph:
             job_experiences = self.job_repository.get_by_user_id(state["user_id"])
             courses = self.course_repository.get_by_user_id(state["user_id"])
             
+            # Prepare profile data with normalized career_goal_type
+            profile_dict = self._normalize_career_goal_type(profile.model_dump())
+            
             career_plan = self.career_planning_service.generate_career_plan_1y(
-                profile_data=profile.model_dump(),
+                profile_data=profile_dict,
                 job_experiences=[j.model_dump() for j in job_experiences],
                 courses=[c.model_dump() for c in courses],
                 user_group=user.user_group.value,
@@ -602,8 +697,11 @@ class WorkflowGraph:
             job_experiences = self.job_repository.get_by_user_id(state["user_id"])
             courses = self.course_repository.get_by_user_id(state["user_id"])
             
+            # Prepare profile data with normalized career_goal_type
+            profile_dict = self._normalize_career_goal_type(profile.model_dump())
+            
             career_plan = self.career_planning_service.generate_career_plan_3y(
-                profile_data=profile.model_dump(),
+                profile_data=profile_dict,
                 job_experiences=[j.model_dump() for j in job_experiences],
                 courses=[c.model_dump() for c in courses],
                 user_group=user.user_group.value,
@@ -637,8 +735,11 @@ class WorkflowGraph:
             job_experiences = self.job_repository.get_by_user_id(state["user_id"])
             courses = self.course_repository.get_by_user_id(state["user_id"])
             
+            # Prepare profile data with normalized career_goal_type
+            profile_dict = self._normalize_career_goal_type(profile.model_dump())
+            
             career_plan = self.career_planning_service.generate_career_plan_5y(
-                profile_data=profile.model_dump(),
+                profile_data=profile_dict,
                 job_experiences=[j.model_dump() for j in job_experiences],
                 courses=[c.model_dump() for c in courses],
                 user_group=user.user_group.value,
@@ -707,20 +808,24 @@ class WorkflowGraph:
     def _save_product_node(self, state: WorkflowState) -> WorkflowState:
         """
         Save generated product.
-        This node is marked with interrupt_before, so workflow pauses for human review.
+        For direct product generation (when human_decision="approve" is set), auto-save.
+        Otherwise, this acts as a checkpoint for human review.
         """
         if state.get("error"):
             return state
         
         try:
             state["current_step"] = "saving_product"
-            state["needs_human_review"] = True
             
-            # Check if human has approved
+            # Check if human has approved (for direct product generation)
             human_decision = state.get("human_decision")
             if human_decision != "approve":
-                # Wait for approval
+                # Wait for approval - set flag for human review
+                state["needs_human_review"] = True
                 return state
+            
+            # Auto-approve: proceed with saving
+            state["needs_human_review"] = False
             
             from career_navigator.domain.models.product import GeneratedProduct
             
@@ -754,8 +859,12 @@ class WorkflowGraph:
                 if linkedin_export:
                     content = dict(linkedin_export) if isinstance(linkedin_export, dict) else {}
             
+            user_id = state.get("user_id")
+            if not user_id:
+                raise ValueError("User ID is required to save product")
+            
             product = GeneratedProduct(
-                user_id=state["user_id"],
+                user_id=user_id,
                 product_type=product_type,
                 content=content,
                 is_active=True,
@@ -782,11 +891,25 @@ class WorkflowGraph:
         state["current_step"] = "error"
         return state
 
+    def _should_validate_or_skip_to_product(self, state: WorkflowState) -> Literal["validate", "skip_to_product", "skip"]:
+        """Conditional: Should we validate, skip to product generation, or skip?"""
+        if state.get("error"):
+            return "skip"
+        
+        # Skip validation and go directly to product generation if already validated and product_type is set
+        if state.get("is_validated") and state.get("product_type"):
+            return "skip_to_product"
+        
+        if state.get("is_confirmed"):
+            return "validate"
+        return "skip"
+    
     def _should_validate(self, state: WorkflowState) -> Literal["validate", "skip"]:
         """Conditional: Should we validate?"""
-        if state["error"]:
+        if state.get("error"):
             return "skip"
-        if state["is_confirmed"]:
+        
+        if state.get("is_confirmed"):
             return "validate"
         return "skip"
 
@@ -834,6 +957,17 @@ class WorkflowGraph:
         return state
 
     # Helper methods
+    def _normalize_career_goal_type(self, profile_dict: dict) -> dict:
+        """Normalize career_goal_type to string value."""
+        career_goal_type = profile_dict.get("career_goal_type")
+        if isinstance(career_goal_type, dict):
+            profile_dict["career_goal_type"] = career_goal_type.get("value", "continue_path")
+        elif hasattr(career_goal_type, "value"):
+            profile_dict["career_goal_type"] = career_goal_type.value
+        elif not career_goal_type:
+            profile_dict["career_goal_type"] = "continue_path"
+        return profile_dict
+    
     def _extract_json(self, text: str) -> str:
         """Extract JSON from text."""
         text = text.strip()
@@ -1035,7 +1169,7 @@ class WorkflowGraph:
             academic_record_ids=[],
             is_draft=True,
             is_confirmed=initial_state.get("is_confirmed", False),
-            is_validated=False,
+            is_validated=initial_state.get("is_validated", False),
             validation_report=None,
             generated_cv=None,
             generated_career_path=None,

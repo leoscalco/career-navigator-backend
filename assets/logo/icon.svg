@@ -1,0 +1,35 @@
+<svg width="256" height="256" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <style>
+      .primary-blue { fill: #2962FF; }
+      .accent-orange { fill: #FF9800; }
+      .dark-blue { fill: #193C9B; }
+      .white { fill: #FFFFFF; }
+    </style>
+  </defs>
+  
+  <!-- Outer circle (compass base) -->
+  <circle cx="128" cy="128" r="115" class="primary-blue" stroke="#193C9B" stroke-width="4"/>
+  
+  <!-- Inner circle -->
+  <circle cx="128" cy="128" r="75" class="white" stroke="#2962FF" stroke-width="3"/>
+  
+  <!-- Compass arrow pointing up (career growth) -->
+  <path d="M 128 30 L 100 85 L 112 97 L 112 135 L 144 135 L 144 97 L 156 85 Z" 
+        class="accent-orange" stroke="#193C9B" stroke-width="2"/>
+  
+  <!-- Cardinal direction markers -->
+  <!-- North -->
+  <text x="128" y="25" font-family="Arial, sans-serif" font-size="24" font-weight="bold" 
+        text-anchor="middle" fill="#193C9B">N</text>
+  
+  <!-- East -->
+  <circle cx="243" cy="128" r="6" class="dark-blue"/>
+  
+  <!-- West -->
+  <circle cx="13" cy="128" r="6" class="dark-blue"/>
+  
+  <!-- South -->
+  <circle cx="128" cy="243" r="6" class="dark-blue"/>
+</svg>
+

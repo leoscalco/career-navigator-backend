@@ -44,13 +44,26 @@ class CareerPlanningService:
         # Determine experience level
         experience_level = self._determine_experience_level(job_experiences)
         
+        # Get career goal type, default to continue_path if not specified
+        career_goal_type = profile_data.get("career_goal_type", "continue_path")
+        if not career_goal_type or career_goal_type == "None":
+            career_goal_type = "continue_path"
+        
+        # Get job search locations
+        job_search_locations = profile_data.get("job_search_locations", [])
+        if not job_search_locations:
+            job_search_locations = profile_data.get("desired_job_locations", [])
+        job_search_locations_str = ", ".join(job_search_locations) if job_search_locations else "Not specified"
+        
         prompt = CAREER_PATH_PROMPT.format(
             current_role=current_role,
-            career_goals=profile_data.get("career_goals", "Not specified"),
+            career_goals=profile_data.get("career_goals", "Continue current career path"),
+            career_goal_type=career_goal_type,
             skills=", ".join(skills),
             education=education,
             experience_level=experience_level,
             user_group=user_group,
+            job_search_locations=job_search_locations_str,
         )
         
         try:
@@ -76,12 +89,25 @@ class CareerPlanningService:
         skills = self._extract_skills(job_experiences, courses)
         experience_level = self._determine_experience_level(job_experiences)
         
+        # Get career goal type, default to continue_path if not specified
+        career_goal_type = profile_data.get("career_goal_type", "continue_path")
+        if not career_goal_type or career_goal_type == "None":
+            career_goal_type = "continue_path"
+        
+        # Get job search locations
+        job_search_locations = profile_data.get("job_search_locations", [])
+        if not job_search_locations:
+            job_search_locations = profile_data.get("desired_job_locations", [])
+        job_search_locations_str = ", ".join(job_search_locations) if job_search_locations else "Not specified"
+        
         prompt = CAREER_PLAN_1Y_PROMPT.format(
-            career_goals=profile_data.get("career_goals", "Not specified"),
+            career_goals=profile_data.get("career_goals", "Continue current career path"),
+            career_goal_type=career_goal_type,
             current_role=current_role,
             skills=", ".join(skills),
             experience_level=experience_level,
             user_group=user_group,
+            job_search_locations=job_search_locations_str,
         )
         
         try:
@@ -107,13 +133,26 @@ class CareerPlanningService:
         skills = self._extract_skills(job_experiences, courses)
         experience_level = self._determine_experience_level(job_experiences)
         
+        # Get career goal type, default to continue_path if not specified
+        career_goal_type = profile_data.get("career_goal_type", "continue_path")
+        if not career_goal_type or career_goal_type == "None":
+            career_goal_type = "continue_path"
+        
+        # Get job search locations
+        job_search_locations = profile_data.get("job_search_locations", [])
+        if not job_search_locations:
+            job_search_locations = profile_data.get("desired_job_locations", [])
+        job_search_locations_str = ", ".join(job_search_locations) if job_search_locations else "Not specified"
+        
         prompt = CAREER_PLAN_3Y_PROMPT.format(
-            career_goals=profile_data.get("career_goals", "Not specified"),
+            career_goals=profile_data.get("career_goals", "Continue current career path"),
+            career_goal_type=career_goal_type,
             long_term_goals=profile_data.get("long_term_goals", "Not specified"),
             current_role=current_role,
             skills=", ".join(skills),
             experience_level=experience_level,
             user_group=user_group,
+            job_search_locations=job_search_locations_str,
         )
         
         try:
@@ -139,13 +178,26 @@ class CareerPlanningService:
         skills = self._extract_skills(job_experiences, courses)
         experience_level = self._determine_experience_level(job_experiences)
         
+        # Get career goal type, default to continue_path if not specified
+        career_goal_type = profile_data.get("career_goal_type", "continue_path")
+        if not career_goal_type or career_goal_type == "None":
+            career_goal_type = "continue_path"
+        
+        # Get job search locations
+        job_search_locations = profile_data.get("job_search_locations", [])
+        if not job_search_locations:
+            job_search_locations = profile_data.get("desired_job_locations", [])
+        job_search_locations_str = ", ".join(job_search_locations) if job_search_locations else "Not specified"
+        
         prompt = CAREER_PLAN_5Y_PROMPT.format(
-            career_goals=profile_data.get("career_goals", "Not specified"),
+            career_goals=profile_data.get("career_goals", "Continue current career path"),
+            career_goal_type=career_goal_type,
             long_term_goals=profile_data.get("long_term_goals", "Not specified"),
             current_role=current_role,
             skills=", ".join(skills),
             experience_level=experience_level,
             user_group=user_group,
+            job_search_locations=job_search_locations_str,
         )
         
         try:
