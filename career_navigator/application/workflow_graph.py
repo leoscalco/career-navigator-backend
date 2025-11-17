@@ -25,11 +25,15 @@ from typing import Any
 class WorkflowState(TypedDict):
     """State that flows through the workflow graph."""
     # Input
-    user_id: int
+    user_id: int | None  # None initially, created from parsed data
     input_type: Literal["cv", "linkedin"]
     cv_content: str | None
     linkedin_data: str | None
     linkedin_url: str | None
+    # User info extracted from CV (for user creation)
+    user_email: str | None
+    user_name: str | None
+    user_group: str | None  # Will be determined or provided
     
     # Product generation request
     product_type: str | None  # "cv", "career_path", "career_plan_1y", "career_plan_3y", "career_plan_5y", "linkedin_export"
@@ -232,6 +236,7 @@ class WorkflowGraph:
     def _save_draft_node(self, state: WorkflowState) -> WorkflowState:
         """
         Save parsed data as draft.
+        Creates user from parsed data if user_id is None.
         This is a checkpoint for human-in-the-loop review.
         """
         if state.get("error"):
@@ -243,11 +248,85 @@ class WorkflowGraph:
             if not parsed_data:
                 raise ValueError("No parsed data to save")
             
+            # Create user if not exists (from parsed data)
+            user_id = state.get("user_id")
+            if not user_id:
+                user_email = parsed_data.get("user_email") or state.get("user_email")
+                user_name = parsed_data.get("user_name") or state.get("user_name")
+                
+                if not user_email:
+                    # Generate placeholder email if not found
+                    content_hash = abs(hash(state.get('cv_content', state.get('linkedin_data', ''))[:50]))
+                    user_email = f"user_{content_hash}@temp.careernavigator.com"
+                
+                # Check if user already exists by email
+                from career_navigator.domain.models.user import User as DomainUser
+                existing_user = self.user_repository.get_by_email(user_email)
+                
+                if existing_user:
+                    user_id = existing_user.id
+                else:
+                    # Create new user
+                    # Determine user_group based on experience (default to inexperienced_no_goal)
+                    user_group = state.get("user_group") or "inexperienced_no_goal"
+                    from career_navigator.domain.models.user_group import UserGroup
+                    
+                    # Try to determine user group from parsed data
+                    job_experiences = parsed_data.get("job_experiences", [])
+                    has_experience = len(job_experiences) > 0
+                    has_goals = bool(parsed_data.get("career_goals") or parsed_data.get("short_term_goals") or parsed_data.get("long_term_goals"))
+                    
+                    if has_experience and has_goals:
+                        user_group = UserGroup.EXPERIENCED_CONTINUING
+                    elif has_experience and not has_goals:
+                        user_group = UserGroup.EXPERIENCED_CHANGING
+                    elif not has_experience and has_goals:
+                        user_group = UserGroup.INEXPERIENCED_WITH_GOAL
+                    else:
+                        user_group = UserGroup.INEXPERIENCED_NO_GOAL
+                    
+                    # Generate username from name or email
+                    username = user_name.lower().replace(" ", "_") if user_name else user_email.split("@")[0]
+                    # Clean username (remove special chars, limit length)
+                    username = "".join(c for c in username if c.isalnum() or c in ["_", "-"])[:50]
+                    if not username:
+                        username = "user"
+                    
+                    # Ensure username is unique by appending number if needed
+                    # Since email is unique, we'll use a simple approach: append counter if email pattern exists
+                    base_username = username
+                    counter = 1
+                    # Check if a user with similar email pattern already exists
+                    test_email = f"{username}@temp.careernavigator.com"
+                    existing_test_user = self.user_repository.get_by_email(test_email)
+                    if existing_test_user:
+                        # Try variations until we find one that doesn't exist
+                        while counter < 1000:
+                            username = f"{base_username}_{counter}"
+                            test_email = f"{username}@temp.careernavigator.com"
+                            if not self.user_repository.get_by_email(test_email):
+                                break
+                            counter += 1
+                        if counter >= 1000:
+                            # Use hash of email as fallback
+                            username = f"{base_username}_{abs(hash(user_email)) % 10000}"
+                    
+                    new_user = DomainUser(
+                        email=user_email,
+                        username=username,
+                        user_group=user_group,
+                    )
+                    created_user = self.user_repository.create(new_user)
+                    user_id = created_user.id
+                    state["user_id"] = user_id
+                    state["user_email"] = user_email
+                    state["user_name"] = user_name
+            
             # Get or create profile
-            existing_profile = self.profile_repository.get_by_user_id(state["user_id"])
+            existing_profile = self.profile_repository.get_by_user_id(user_id)
             
             profile_data = parsed_data["profile_data"]
-            profile_data["user_id"] = state["user_id"]
+            profile_data["user_id"] = user_id
             profile_data["is_draft"] = True
             profile_data["is_validated"] = False
             
@@ -273,7 +352,7 @@ class WorkflowGraph:
             # Save job experiences
             job_experience_ids = []
             for job_data in parsed_data.get("job_experiences", []):
-                job_data["user_id"] = state["user_id"]
+                job_data["user_id"] = user_id
                 job = self.job_repository.create(
                     self._dict_to_job_experience(job_data)
                 )
@@ -285,7 +364,7 @@ class WorkflowGraph:
             # Save courses
             course_ids = []
             for course_data in parsed_data.get("courses", []):
-                course_data["user_id"] = state["user_id"]
+                course_data["user_id"] = user_id
                 course = self.course_repository.create(
                     self._dict_to_course(course_data)
                 )
@@ -297,7 +376,7 @@ class WorkflowGraph:
             # Save academic records
             academic_record_ids = []
             for academic_data in parsed_data.get("academic_records", []):
-                academic_data["user_id"] = state["user_id"]
+                academic_data["user_id"] = user_id
                 academic = self.academic_repository.create(
                     self._dict_to_academic(academic_data)
                 )
@@ -770,6 +849,10 @@ class WorkflowGraph:
         """Structure parsed data into domain models format."""
         personal_info = parsed_data.get("personal_info", {})
         
+        # Extract user info for user creation
+        user_email = personal_info.get("email")
+        user_name = personal_info.get("name")
+        
         profile_data = {
             "career_goals": parsed_data.get("career_goals"),
             "short_term_goals": parsed_data.get("short_term_goals"),
@@ -784,6 +867,10 @@ class WorkflowGraph:
             "hobbies": parsed_data.get("hobbies", []),
             "additional_info": parsed_data.get("additional_info"),
         }
+        
+        # Store user info in parsed_data for later use
+        parsed_data["user_email"] = user_email
+        parsed_data["user_name"] = user_name
 
         job_experiences = []
         for job in parsed_data.get("job_experiences", []):
@@ -930,12 +1017,16 @@ class WorkflowGraph:
         Returns:
             Final state dictionary
         """
+        user_id = initial_state.get("user_id")
         state = WorkflowState(
-            user_id=initial_state["user_id"],
+            user_id=user_id,
             input_type=initial_state["input_type"],
             cv_content=initial_state.get("cv_content"),
             linkedin_data=initial_state.get("linkedin_data"),
             linkedin_url=initial_state.get("linkedin_url"),
+            user_email=initial_state.get("user_email"),
+            user_name=initial_state.get("user_name"),
+            user_group=initial_state.get("user_group"),
             product_type=initial_state.get("product_type"),
             parsed_data=None,
             profile_id=None,
@@ -961,9 +1052,11 @@ class WorkflowGraph:
         
         # Create config for checkpointer if not provided
         if config is None:
+            # Use profile_id or a temporary ID for thread_id
+            thread_id = f"user_{user_id}" if user_id else f"temp_{hash(str(initial_state.get('cv_content', initial_state.get('linkedin_data', ''))[:50]))}"
             config = {
                 "configurable": {
-                    "thread_id": f"user_{initial_state['user_id']}",  # Unique thread per user
+                    "thread_id": thread_id,
                 }
             }
         

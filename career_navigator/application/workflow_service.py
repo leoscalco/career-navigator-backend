@@ -44,19 +44,22 @@ class WorkflowService:
         )
 
     def parse_and_save_cv(
-        self, user_id: int, cv_content: str, linkedin_url: Optional[str] = None
+        self, user_id: Optional[int], cv_content: str, linkedin_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Step 1: Parse CV content and save as draft using workflow graph.
         
+        If user_id is None, a new user will be created from the parsed CV data.
+        
         Returns:
+        - user_id: ID of created/existing user
         - profile_id: ID of created/updated profile
         - job_experience_ids: List of created job experience IDs
         - course_ids: List of created course IDs
         - academic_record_ids: List of created academic record IDs
         """
         initial_state = {
-            "user_id": user_id,
+            "user_id": user_id,  # Can be None
             "input_type": "cv",
             "cv_content": cv_content,
             "linkedin_url": linkedin_url,
@@ -68,7 +71,11 @@ class WorkflowService:
         if result.get("error"):
             raise ValueError(result["error"])
         
+        if not result.get("user_id"):
+            raise ValueError("User ID was not created during parsing")
+        
         return {
+            "user_id": result["user_id"],
             "profile_id": result["profile_id"],
             "job_experience_ids": result["job_experience_ids"],
             "course_ids": result["course_ids"],
@@ -77,13 +84,15 @@ class WorkflowService:
         }
 
     def parse_and_save_linkedin(
-        self, user_id: int, linkedin_data: str, linkedin_url: Optional[str] = None
+        self, user_id: Optional[int], linkedin_data: str, linkedin_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Step 1: Parse LinkedIn data and save as draft using workflow graph.
+        
+        If user_id is None, a new user will be created from the parsed LinkedIn data.
         """
         initial_state = {
-            "user_id": user_id,
+            "user_id": user_id,  # Can be None
             "input_type": "linkedin",
             "linkedin_data": linkedin_data,
             "linkedin_url": linkedin_url,
@@ -95,7 +104,11 @@ class WorkflowService:
         if result.get("error"):
             raise ValueError(result["error"])
         
+        if not result.get("user_id"):
+            raise ValueError("User ID was not created during parsing")
+        
         return {
+            "user_id": result["user_id"],
             "profile_id": result["profile_id"],
             "job_experience_ids": result["job_experience_ids"],
             "course_ids": result["course_ids"],

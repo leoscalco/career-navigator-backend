@@ -15,12 +15,13 @@ from career_navigator.infrastructure.repositories.product_repository import SQLA
 from career_navigator.application.workflow_service import WorkflowService
 from career_navigator.api.schemas.product import ProductResponse
 from career_navigator.infrastructure.document_parser import DocumentParser
+from career_navigator.infrastructure.linkedin_api import LinkedInAPIClient, LinkedInAPIError
 
 router = APIRouter(prefix="/workflow", tags=["Workflow"])
 
 
 class CVParseRequest(BaseModel):
-    user_id: int
+    user_id: Optional[int] = None  # Optional - will be created from CV if not provided
     cv_content: str
     linkedin_url: Optional[str] = None
 
@@ -34,12 +35,15 @@ class CVFileParseRequest(BaseModel):
 
 
 class LinkedInParseRequest(BaseModel):
-    user_id: int
-    linkedin_data: str
-    linkedin_url: Optional[str] = None
+    user_id: Optional[int] = None  # Optional - will be created from LinkedIn data if not provided
+    linkedin_profile_url: Optional[str] = None  # LinkedIn profile URL (e.g., https://linkedin.com/in/username)
+    linkedin_profile_id: Optional[str] = None  # LinkedIn profile ID or "me" for authenticated user
+    linkedin_access_token: Optional[str] = None  # Optional OAuth access token (uses config if not provided)
+    linkedin_data: Optional[str] = None  # Optional: raw LinkedIn data (if not using API)
 
 
 class ParseResponse(BaseModel):
+    user_id: int  # User ID (created or existing)
     profile_id: int
     job_experience_ids: list[int]
     course_ids: list[int]
@@ -123,7 +127,7 @@ def parse_cv(
 @router.post("/parse-cv-file", response_model=ParseResponse, status_code=status.HTTP_201_CREATED)
 async def parse_cv_file(
     file: UploadFile = File(..., description="CV file (PDF, DOCX, or TXT)"),
-    user_id: int = Form(..., description="User ID to associate with the CV"),
+    user_id: Optional[int] = Form(None, description="Optional User ID. If not provided, user will be created from CV data."),
     linkedin_url: Optional[str] = Form(None, description="Optional LinkedIn profile URL"),
     workflow_service: WorkflowService = Depends(get_workflow_service),
 ):
@@ -185,7 +189,7 @@ async def parse_cv_file(
         
         # Parse CV using workflow service
         result = workflow_service.parse_and_save_cv(
-            user_id=user_id,
+            user_id=user_id,  # Can be None - will be created from CV
             cv_content=cv_content,
             linkedin_url=linkedin_url,
         )
@@ -214,15 +218,88 @@ def parse_linkedin(
     """
     Step 1: Parse LinkedIn profile data and save as draft.
     
-    Same as parse-cv but for LinkedIn data.
+    This endpoint can work in two modes:
+    1. **LinkedIn API mode** (recommended): Provide `linkedin_profile_url` or `linkedin_profile_id`
+       - Fetches profile data directly from LinkedIn API
+       - Requires LinkedIn OAuth access token (via `linkedin_access_token` or `LINKEDIN_ACCESS_TOKEN` env var)
+    
+    2. **Manual data mode**: Provide `linkedin_data` as raw text
+       - Parses the provided LinkedIn data directly
+    
+    The endpoint:
+    1. Fetches LinkedIn profile data (if using API mode)
+    2. Parses the LinkedIn content using LLM
+    3. Extracts structured data (profile, experiences, courses, academics)
+    4. Creates user if user_id is not provided
+    5. Saves everything as draft in the database
+    6. Returns the IDs of created records
     """
     try:
+        linkedin_data = None
+        linkedin_url = None
+        
+        # If LinkedIn API is requested, fetch data from API
+        if request.linkedin_profile_url or request.linkedin_profile_id:
+            try:
+                # Initialize LinkedIn API client
+                access_token = request.linkedin_access_token
+                linkedin_client = LinkedInAPIClient(access_token=access_token)
+                
+                # Determine profile ID
+                profile_id = request.linkedin_profile_id
+                if not profile_id:
+                    # Default to "me" for authenticated user's profile
+                    # Note: LinkedIn API v2 requires numeric ID or "me", not username from URL
+                    profile_id = "me"
+                
+                # Store the URL for reference (even if we can't use it directly for API)
+                linkedin_url = request.linkedin_profile_url
+                
+                # Fetch profile data from LinkedIn API
+                # Note: If profile_url is provided but profile_id is not numeric or "me",
+                # the API client will default to "me"
+                profile_data = linkedin_client.get_profile(
+                    profile_id=profile_id,
+                    profile_url=linkedin_url
+                )
+                
+                # Format profile data for parsing
+                linkedin_data = linkedin_client.format_profile_for_parsing(profile_data)
+                # Use provided URL or construct from profile data if available
+                if not linkedin_url:
+                    # Try to construct URL from profile data if we have the ID
+                    if "id" in profile_data:
+                        linkedin_url = f"https://linkedin.com/in/{profile_data['id']}"
+                
+            except LinkedInAPIError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Failed to fetch LinkedIn profile: {str(e)}",
+                )
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e),
+                )
+        elif request.linkedin_data:
+            # Use provided LinkedIn data directly
+            linkedin_data = request.linkedin_data
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Either linkedin_profile_url/linkedin_profile_id or linkedin_data must be provided",
+            )
+        
+        # Parse LinkedIn data
         result = workflow_service.parse_and_save_linkedin(
-            user_id=request.user_id,
-            linkedin_data=request.linkedin_data,
-            linkedin_url=request.linkedin_url,
+            user_id=request.user_id,  # Can be None - will be created from LinkedIn data
+            linkedin_data=linkedin_data,
+            linkedin_url=linkedin_url,
         )
         return ParseResponse(**result)
+        
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
