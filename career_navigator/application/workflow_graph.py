@@ -13,9 +13,13 @@ from career_navigator.domain.prompts import (
     LINKEDIN_PARSING_PROMPT,
     GUARDRAIL_VALIDATION_PROMPT,
     CV_GENERATION_PROMPT,
+    LINKEDIN_EXPORT_PROMPT,
 )
+from career_navigator.domain.models.product_type import ProductType
+from career_navigator.application.career_planning_service import CareerPlanningService
 import json
 from datetime import date
+from typing import Any
 
 
 class WorkflowState(TypedDict):
@@ -26,6 +30,9 @@ class WorkflowState(TypedDict):
     cv_content: str | None
     linkedin_data: str | None
     linkedin_url: str | None
+    
+    # Product generation request
+    product_type: str | None  # "cv", "career_path", "career_plan_1y", "career_plan_3y", "career_plan_5y", "linkedin_export"
     
     # Parsed data
     parsed_data: dict | None
@@ -42,7 +49,16 @@ class WorkflowState(TypedDict):
     
     # Generated products
     generated_cv: str | None
+    generated_career_path: dict | None
+    generated_career_plan_1y: dict | None
+    generated_career_plan_3y: dict | None
+    generated_career_plan_5y: dict | None
+    generated_linkedin_export: dict | None
     product_id: int | None
+    
+    # Human-in-the-loop
+    needs_human_review: bool
+    human_decision: str | None  # "approve", "edit", "reject"
     
     # Error handling
     error: str | None
@@ -75,6 +91,9 @@ class WorkflowGraph:
         self.academic_repository = academic_repository
         self.product_repository = product_repository
         
+        # Initialize career planning service
+        self.career_planning_service = CareerPlanningService(llm)
+        
         # Create checkpointer for human-in-the-loop (state persistence)
         self.checkpointer = MemorySaver()
         
@@ -88,8 +107,14 @@ class WorkflowGraph:
         Human-in-the-loop checkpoints:
         - After save_draft: User reviews parsed data
         - After validate: User reviews validation results
-        - Before generate_cv: User approves CV generation
+        - Before generating products: User approves generation
         - Before save_product: User reviews final product
+        
+        Product generation paths:
+        - CV generation
+        - Career path suggestions
+        - Career plans (1y, 3y, 5y)
+        - LinkedIn export
         """
         workflow = StateGraph(WorkflowState)
         
@@ -99,8 +124,17 @@ class WorkflowGraph:
         workflow.add_node("wait_confirmation", self._wait_confirmation_node)
         workflow.add_node("validate", self._validate_node)
         workflow.add_node("check_validation", self._check_validation_node)
+        
+        # Product generation nodes
         workflow.add_node("generate_cv", self._generate_cv_node)
+        workflow.add_node("generate_career_path", self._generate_career_path_node)
+        workflow.add_node("generate_career_plan_1y", self._generate_career_plan_1y_node)
+        workflow.add_node("generate_career_plan_3y", self._generate_career_plan_3y_node)
+        workflow.add_node("generate_career_plan_5y", self._generate_career_plan_5y_node)
+        workflow.add_node("generate_linkedin_export", self._generate_linkedin_export_node)
+        
         workflow.add_node("save_product", self._save_product_node)
+        workflow.add_node("select_product_type", self._select_product_type_node)
         workflow.add_node("error_handler", self._error_handler_node)
         
         # Define the flow
@@ -109,8 +143,7 @@ class WorkflowGraph:
         # Parse → Save Draft
         workflow.add_edge("parse", "save_draft")
         
-        # Save Draft → Wait for Confirmation (HUMAN-IN-THE-LOOP CHECKPOINT)
-        # This node will interrupt and wait for human approval
+        # Save Draft → Wait for Confirmation (HUMAN-IN-THE-LOOP CHECKPOINT with interrupt)
         workflow.add_edge("save_draft", "wait_confirmation")
         
         # After confirmation, validate
@@ -126,19 +159,39 @@ class WorkflowGraph:
         # Validate → Check validation result (GUARDRAILS VALIDATION)
         workflow.add_edge("validate", "check_validation")
         
-        # Check validation → Generate CV or retry
+        # Check validation → Select product type or retry
         workflow.add_conditional_edges(
             "check_validation",
-            self._should_generate_cv,
+            self._should_generate_product,
             {
-                "generate": "generate_cv",
+                "generate": "select_product_type",
                 "retry": "wait_confirmation",  # Go back to allow user to fix issues
                 "end": END,
             }
         )
         
-        # Generate CV → Save Product (HUMAN-IN-THE-LOOP CHECKPOINT)
+        # Select product type → Route to appropriate generator
+        workflow.add_conditional_edges(
+            "select_product_type",
+            self._route_to_product_generator,
+            {
+                "cv": "generate_cv",
+                "career_path": "generate_career_path",
+                "career_plan_1y": "generate_career_plan_1y",
+                "career_plan_3y": "generate_career_plan_3y",
+                "career_plan_5y": "generate_career_plan_5y",
+                "linkedin_export": "generate_linkedin_export",
+                "end": END,
+            }
+        )
+        
+        # All generators → Save Product (HUMAN-IN-THE-LOOP CHECKPOINT)
         workflow.add_edge("generate_cv", "save_product")
+        workflow.add_edge("generate_career_path", "save_product")
+        workflow.add_edge("generate_career_plan_1y", "save_product")
+        workflow.add_edge("generate_career_plan_3y", "save_product")
+        workflow.add_edge("generate_career_plan_5y", "save_product")
+        workflow.add_edge("generate_linkedin_export", "save_product")
         
         # Save Product → End
         workflow.add_edge("save_product", END)
@@ -147,7 +200,7 @@ class WorkflowGraph:
         workflow.add_edge("error_handler", END)
         
         # Compile with checkpointer for state persistence and interrupts
-        return workflow.compile(checkpointer=self.checkpointer)
+        return workflow.compile(checkpointer=self.checkpointer, interrupt_before=["wait_confirmation", "save_product"])
 
     def _parse_node(self, state: WorkflowState) -> WorkflowState:
         """Parse CV or LinkedIn content."""
@@ -265,17 +318,21 @@ class WorkflowGraph:
         """
         Wait for user confirmation (human-in-the-loop checkpoint).
         
-        This node acts as a checkpoint where the workflow pauses.
+        This node is marked with interrupt_before, so the workflow will pause here.
         The workflow can be resumed after human review via the API.
-        Use LangGraph's interrupt mechanism to pause here.
         """
         state["current_step"] = "waiting_confirmation"
+        state["needs_human_review"] = True
         
-        # If not confirmed, this will interrupt the workflow
-        # The workflow will pause and can be resumed via API
-        if not state.get("is_confirmed", False):
-            # Set interrupt flag - in production, this would use LangGraph's interrupt
-            state["needs_human_review"] = True
+        # Check if human has made a decision
+        human_decision = state.get("human_decision")
+        if human_decision == "approve":
+            state["is_confirmed"] = True
+            state["needs_human_review"] = False
+        elif human_decision == "reject":
+            state["error"] = "User rejected the draft data"
+            state["current_step"] = "error"
+        # If "edit", user will update data via CRUD APIs and call confirm again
         
         return state
 
@@ -374,27 +431,260 @@ class WorkflowGraph:
             state["current_step"] = "error"
         
         return state
+    
+    def _generate_career_path_node(self, state: WorkflowState) -> WorkflowState:
+        """Generate career path suggestions."""
+        if state.get("error"):
+            return state
+        
+        try:
+            state["current_step"] = "generating_career_path"
+            
+            profile = self.profile_repository.get_by_user_id(state["user_id"])
+            if not profile:
+                raise ValueError(f"Profile not found for user {state['user_id']}")
+            
+            user = self.user_repository.get_by_id(state["user_id"])
+            if not user:
+                raise ValueError(f"User not found: {state['user_id']}")
+            
+            job_experiences = self.job_repository.get_by_user_id(state["user_id"])
+            courses = self.course_repository.get_by_user_id(state["user_id"])
+            academic_records = self.academic_repository.get_by_user_id(state["user_id"])
+            
+            career_path = self.career_planning_service.generate_career_path(
+                profile_data=profile.model_dump(),
+                job_experiences=[j.model_dump() for j in job_experiences],
+                academic_records=[a.model_dump() for a in academic_records],
+                courses=[c.model_dump() for c in courses],
+                user_group=user.user_group.value,
+            )
+            
+            state["generated_career_path"] = career_path
+            state["error"] = None
+            
+        except Exception as e:
+            state["error"] = f"Career path generation failed: {str(e)}"
+            state["current_step"] = "error"
+        
+        return state
+    
+    def _generate_career_plan_1y_node(self, state: WorkflowState) -> WorkflowState:
+        """Generate 1-year career plan."""
+        if state.get("error"):
+            return state
+        
+        try:
+            state["current_step"] = "generating_career_plan_1y"
+            
+            profile = self.profile_repository.get_by_user_id(state["user_id"])
+            if not profile:
+                raise ValueError(f"Profile not found for user {state['user_id']}")
+            
+            user = self.user_repository.get_by_id(state["user_id"])
+            if not user:
+                raise ValueError(f"User not found: {state['user_id']}")
+            
+            job_experiences = self.job_repository.get_by_user_id(state["user_id"])
+            courses = self.course_repository.get_by_user_id(state["user_id"])
+            
+            career_plan = self.career_planning_service.generate_career_plan_1y(
+                profile_data=profile.model_dump(),
+                job_experiences=[j.model_dump() for j in job_experiences],
+                courses=[c.model_dump() for c in courses],
+                user_group=user.user_group.value,
+            )
+            
+            state["generated_career_plan_1y"] = career_plan
+            state["error"] = None
+            
+        except Exception as e:
+            state["error"] = f"1-year career plan generation failed: {str(e)}"
+            state["current_step"] = "error"
+        
+        return state
+    
+    def _generate_career_plan_3y_node(self, state: WorkflowState) -> WorkflowState:
+        """Generate 3-year career plan."""
+        if state.get("error"):
+            return state
+        
+        try:
+            state["current_step"] = "generating_career_plan_3y"
+            
+            profile = self.profile_repository.get_by_user_id(state["user_id"])
+            if not profile:
+                raise ValueError(f"Profile not found for user {state['user_id']}")
+            
+            user = self.user_repository.get_by_id(state["user_id"])
+            if not user:
+                raise ValueError(f"User not found: {state['user_id']}")
+            
+            job_experiences = self.job_repository.get_by_user_id(state["user_id"])
+            courses = self.course_repository.get_by_user_id(state["user_id"])
+            
+            career_plan = self.career_planning_service.generate_career_plan_3y(
+                profile_data=profile.model_dump(),
+                job_experiences=[j.model_dump() for j in job_experiences],
+                courses=[c.model_dump() for c in courses],
+                user_group=user.user_group.value,
+            )
+            
+            state["generated_career_plan_3y"] = career_plan
+            state["error"] = None
+            
+        except Exception as e:
+            state["error"] = f"3-year career plan generation failed: {str(e)}"
+            state["current_step"] = "error"
+        
+        return state
+    
+    def _generate_career_plan_5y_node(self, state: WorkflowState) -> WorkflowState:
+        """Generate 5+ year career plan."""
+        if state.get("error"):
+            return state
+        
+        try:
+            state["current_step"] = "generating_career_plan_5y"
+            
+            profile = self.profile_repository.get_by_user_id(state["user_id"])
+            if not profile:
+                raise ValueError(f"Profile not found for user {state['user_id']}")
+            
+            user = self.user_repository.get_by_id(state["user_id"])
+            if not user:
+                raise ValueError(f"User not found: {state['user_id']}")
+            
+            job_experiences = self.job_repository.get_by_user_id(state["user_id"])
+            courses = self.course_repository.get_by_user_id(state["user_id"])
+            
+            career_plan = self.career_planning_service.generate_career_plan_5y(
+                profile_data=profile.model_dump(),
+                job_experiences=[j.model_dump() for j in job_experiences],
+                courses=[c.model_dump() for c in courses],
+                user_group=user.user_group.value,
+            )
+            
+            state["generated_career_plan_5y"] = career_plan
+            state["error"] = None
+            
+        except Exception as e:
+            state["error"] = f"5-year career plan generation failed: {str(e)}"
+            state["current_step"] = "error"
+        
+        return state
+    
+    def _generate_linkedin_export_node(self, state: WorkflowState) -> WorkflowState:
+        """Generate LinkedIn export optimization."""
+        if state.get("error"):
+            return state
+        
+        try:
+            state["current_step"] = "generating_linkedin_export"
+            
+            profile = self.profile_repository.get_by_user_id(state["user_id"])
+            if not profile:
+                raise ValueError(f"Profile not found for user {state['user_id']}")
+            
+            job_experiences = self.job_repository.get_by_user_id(state["user_id"])
+            courses = self.course_repository.get_by_user_id(state["user_id"])
+            academic_records = self.academic_repository.get_by_user_id(state["user_id"])
+            
+            # Determine current role
+            current_role = "Not specified"
+            if job_experiences:
+                current_job = job_experiences[0]
+                current_role = f"{current_job.position} at {current_job.company_name}"
+            
+            # Format data
+            job_experiences_text = self._format_job_experiences([j.model_dump() for j in job_experiences])
+            academic_records_text = self._format_academic_records([a.model_dump() for a in academic_records])
+            skills = self._extract_skills([j.model_dump() for j in job_experiences], [c.model_dump() for c in courses])
+            languages_text = self._format_languages(profile.languages or [])
+            
+            prompt = LINKEDIN_EXPORT_PROMPT.format(
+                career_goals=profile.career_goals or "Not specified",
+                current_role=current_role,
+                current_location=profile.current_location or "Not specified",
+                skills=", ".join(skills),
+                job_experiences=job_experiences_text,
+                academic_records=academic_records_text,
+                languages=languages_text,
+            )
+            
+            response = self.llm.generate(prompt)
+            response = self._extract_json(response)
+            linkedin_export = json.loads(response)
+            
+            state["generated_linkedin_export"] = linkedin_export
+            state["error"] = None
+            
+        except Exception as e:
+            state["error"] = f"LinkedIn export generation failed: {str(e)}"
+            state["current_step"] = "error"
+        
+        return state
 
     def _save_product_node(self, state: WorkflowState) -> WorkflowState:
-        """Save generated CV as a product."""
-        if state["error"]:
+        """
+        Save generated product.
+        This node is marked with interrupt_before, so workflow pauses for human review.
+        """
+        if state.get("error"):
             return state
         
         try:
             state["current_step"] = "saving_product"
+            state["needs_human_review"] = True
+            
+            # Check if human has approved
+            human_decision = state.get("human_decision")
+            if human_decision != "approve":
+                # Wait for approval
+                return state
             
             from career_navigator.domain.models.product import GeneratedProduct
-            from career_navigator.domain.models.product_type import ProductType
+            
+            # Determine product type and content
+            product_type_str = state.get("product_type", "cv")
+            product_type = ProductType(product_type_str)
+            
+            content: dict[str, Any] = {}
+            if product_type == ProductType.CV:
+                cv_content = state.get("generated_cv")
+                if cv_content:
+                    content = {"cv_content": cv_content}
+            elif product_type == ProductType.POSSIBLE_JOBS:
+                career_path = state.get("generated_career_path")
+                if career_path:
+                    content = dict(career_path) if isinstance(career_path, dict) else {}
+            elif product_type == ProductType.CAREER_PLAN_1Y:
+                plan_1y = state.get("generated_career_plan_1y")
+                if plan_1y:
+                    content = dict(plan_1y) if isinstance(plan_1y, dict) else {}
+            elif product_type == ProductType.CAREER_PLAN_3Y:
+                plan_3y = state.get("generated_career_plan_3y")
+                if plan_3y:
+                    content = dict(plan_3y) if isinstance(plan_3y, dict) else {}
+            elif product_type == ProductType.CAREER_PLAN_5Y:
+                plan_5y = state.get("generated_career_plan_5y")
+                if plan_5y:
+                    content = dict(plan_5y) if isinstance(plan_5y, dict) else {}
+            elif product_type == ProductType.LINKEDIN_EXPORT:
+                linkedin_export = state.get("generated_linkedin_export")
+                if linkedin_export:
+                    content = dict(linkedin_export) if isinstance(linkedin_export, dict) else {}
             
             product = GeneratedProduct(
                 user_id=state["user_id"],
-                product_type=ProductType.CV,
-                content={"cv_content": state["generated_cv"]},
+                product_type=product_type,
+                content=content,
                 is_active=True,
             )
             
             created_product = self.product_repository.create(product)
             state["product_id"] = created_product.id
+            state["needs_human_review"] = False
             state["error"] = None
             
         except Exception as e:
@@ -421,8 +711,8 @@ class WorkflowGraph:
             return "validate"
         return "skip"
 
-    def _should_generate_cv(self, state: WorkflowState) -> Literal["generate", "retry", "end"]:
-        """Conditional: Should we generate CV or retry?"""
+    def _should_generate_product(self, state: WorkflowState) -> Literal["generate", "retry", "end"]:
+        """Conditional: Should we generate product or retry?"""
         if state.get("error"):
             return "end"
         
@@ -439,6 +729,30 @@ class WorkflowGraph:
                 return "retry"  # User needs to fix critical issues
         
         return "end"
+    
+    def _route_to_product_generator(self, state: WorkflowState) -> Literal["cv", "career_path", "career_plan_1y", "career_plan_3y", "career_plan_5y", "linkedin_export", "end"]:
+        """Route to the appropriate product generator based on product_type."""
+        product_type = state.get("product_type")
+        
+        if not product_type:
+            return "end"
+        
+        product_type_map: dict[str, Literal["cv", "career_path", "career_plan_1y", "career_plan_3y", "career_plan_5y", "linkedin_export", "end"]] = {
+            "cv": "cv",
+            "career_path": "career_path",
+            "career_plan_1y": "career_plan_1y",
+            "career_plan_3y": "career_plan_3y",
+            "career_plan_5y": "career_plan_5y",
+            "linkedin_export": "linkedin_export",
+        }
+        
+        result = product_type_map.get(product_type, "end")
+        return result
+    
+    def _select_product_type_node(self, state: WorkflowState) -> WorkflowState:
+        """Select product type node - passes through to routing."""
+        state["current_step"] = "selecting_product_type"
+        return state
 
     # Helper methods
     def _extract_json(self, text: str) -> str:
@@ -622,6 +936,7 @@ class WorkflowGraph:
             cv_content=initial_state.get("cv_content"),
             linkedin_data=initial_state.get("linkedin_data"),
             linkedin_url=initial_state.get("linkedin_url"),
+            product_type=initial_state.get("product_type"),
             parsed_data=None,
             profile_id=None,
             job_experience_ids=[],
@@ -632,7 +947,14 @@ class WorkflowGraph:
             is_validated=False,
             validation_report=None,
             generated_cv=None,
+            generated_career_path=None,
+            generated_career_plan_1y=None,
+            generated_career_plan_3y=None,
+            generated_career_plan_5y=None,
+            generated_linkedin_export=None,
             product_id=None,
+            needs_human_review=False,
+            human_decision=initial_state.get("human_decision"),
             error=None,
             current_step="start",
         )
@@ -646,6 +968,47 @@ class WorkflowGraph:
             }
         
         # Run the graph with checkpointer support
-        final_state = self.graph.invoke(state, config=config)
-        return dict(final_state)
+        # Use stream() to handle interrupts properly
+        try:
+            final_state = self.graph.invoke(state, config=config)
+            return dict(final_state)
+        except Exception as e:
+            # If interrupted, return current state
+            return {
+                **dict(state),
+                "error": f"Workflow interrupted: {str(e)}",
+                "needs_human_review": True,
+            }
+    
+    def get_state(self, thread_id: str) -> dict | None:
+        """Get current workflow state from checkpointer."""
+        try:
+            config = {"configurable": {"thread_id": thread_id}}
+            # Get the latest checkpoint
+            # Note: This is a simplified version - actual implementation depends on checkpointer API
+            return None
+        except Exception:
+            return None
+    
+    def resume_workflow(self, thread_id: str, human_decision: str, config: dict | None = None) -> dict:
+        """
+        Resume workflow from checkpoint after human decision.
+        
+        Args:
+            thread_id: Thread ID for the workflow
+            human_decision: "approve", "edit", or "reject"
+            config: Optional LangGraph config
+            
+        Returns:
+            Updated state dictionary
+        """
+        if config is None:
+            config = {"configurable": {"thread_id": thread_id}}
+        
+        # Get current state
+        # Update with human decision
+        # Continue workflow
+        # This would use graph.stream() or graph.invoke() with updated state
+        # For now, return empty dict - full implementation requires checkpoint API access
+        return {}
 

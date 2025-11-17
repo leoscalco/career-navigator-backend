@@ -130,22 +130,54 @@ class WorkflowService:
 
     def generate_and_save_cv(self, user_id: int) -> GeneratedProduct:
         """
-        Step 4: Generate CV and save as product via workflow graph.
+        Generate CV and save as product via workflow graph.
         
         Returns the generated product.
+        """
+        return self._generate_product(user_id, "cv")
+    
+    def generate_and_save_career_path(self, user_id: int) -> GeneratedProduct:
+        """Generate career path and save as product."""
+        return self._generate_product(user_id, "career_path")
+    
+    def generate_and_save_career_plan_1y(self, user_id: int) -> GeneratedProduct:
+        """Generate 1-year career plan and save as product."""
+        return self._generate_product(user_id, "career_plan_1y")
+    
+    def generate_and_save_career_plan_3y(self, user_id: int) -> GeneratedProduct:
+        """Generate 3-year career plan and save as product."""
+        return self._generate_product(user_id, "career_plan_3y")
+    
+    def generate_and_save_career_plan_5y(self, user_id: int) -> GeneratedProduct:
+        """Generate 5+ year career plan and save as product."""
+        return self._generate_product(user_id, "career_plan_5y")
+    
+    def generate_and_save_linkedin_export(self, user_id: int) -> GeneratedProduct:
+        """Generate LinkedIn export and save as product."""
+        return self._generate_product(user_id, "linkedin_export")
+    
+    def _generate_product(self, user_id: int, product_type: str) -> GeneratedProduct:
+        """
+        Generic method to generate any product type.
+        
+        Args:
+            user_id: User ID
+            product_type: One of "cv", "career_path", "career_plan_1y", "career_plan_3y", "career_plan_5y", "linkedin_export"
         """
         profile = self.profile_repository.get_by_user_id(user_id)
         if not profile:
             raise ValueError(f"Profile not found for user {user_id}")
         
         if not profile.is_validated:
-            raise ValueError("Profile must be validated before generating CV")
+            raise ValueError("Profile must be validated before generating products")
         
-        # Run full workflow with confirmed and validated flags
+        # Run workflow with product type
         initial_state = {
             "user_id": user_id,
             "input_type": "cv",  # Doesn't matter, we're past parsing
+            "product_type": product_type,
             "is_confirmed": True,
+            "is_validated": True,
         }
         
         result = self.workflow_graph.run(initial_state)
@@ -154,7 +186,7 @@ class WorkflowService:
             raise ValueError(result["error"])
         
         if not result.get("product_id"):
-            raise ValueError("Failed to generate CV product")
+            raise ValueError(f"Failed to generate {product_type} product")
         
         # Retrieve the created product
         product = self.product_repository.get_by_id(result["product_id"])
@@ -162,6 +194,56 @@ class WorkflowService:
             raise ValueError("Product was created but not found")
         
         return product
+    
+    def get_workflow_status(self, user_id: int) -> Dict[str, Any]:
+        """
+        Get current workflow status for a user.
+        
+        Returns:
+            Dictionary with workflow status, current step, and pending actions
+        """
+        thread_id = f"user_{user_id}"
+        state = self.workflow_graph.get_state(thread_id)
+        
+        if not state:
+            # Check if profile exists
+            profile = self.profile_repository.get_by_user_id(user_id)
+            if not profile:
+                return {
+                    "status": "not_started",
+                    "message": "No workflow started for this user",
+                }
+            
+            return {
+                "status": "completed",
+                "current_step": "completed",
+                "is_draft": profile.is_draft,
+                "is_validated": profile.is_validated,
+            }
+        
+        return {
+            "status": "in_progress",
+            "current_step": state.get("current_step", "unknown"),
+            "needs_human_review": state.get("needs_human_review", False),
+            "is_draft": state.get("is_draft", False),
+            "is_validated": state.get("is_validated", False),
+            "error": state.get("error"),
+        }
+    
+    def resume_workflow(self, user_id: int, human_decision: str) -> Dict[str, Any]:
+        """
+        Resume workflow after human decision.
+        
+        Args:
+            user_id: User ID
+            human_decision: "approve", "edit", or "reject"
+            
+        Returns:
+            Updated workflow state
+        """
+        thread_id = f"user_{user_id}"
+        result = self.workflow_graph.resume_workflow(thread_id, human_decision)
+        return result
 
     def confirm_draft(self, user_id: int) -> Dict[str, Any]:
         """

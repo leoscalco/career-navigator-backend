@@ -192,13 +192,9 @@ def generate_cv(
     workflow_service: WorkflowService = Depends(get_workflow_service),
 ):
     """
-    Step 4: Generate CV and save as product.
+    Generate CV and save as product.
     
-    This endpoint:
-    1. Validates that profile is validated
-    2. Generates a professional CV using LLM
-    3. Saves it as a GeneratedProduct
-    4. Returns the created product
+    Requires validated profile. Workflow will pause for human approval before saving.
     """
     try:
         product = workflow_service.generate_and_save_cv(user_id)
@@ -212,5 +208,190 @@ def generate_cv(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"CV generation failed: {str(e)}",
+        )
+
+
+@router.post("/generate-career-path/{user_id}", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
+def generate_career_path(
+    user_id: int,
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+):
+    """
+    Generate career path suggestions and save as product.
+    
+    Requires validated profile. Returns career path recommendations based on user's profile.
+    """
+    try:
+        product = workflow_service.generate_and_save_career_path(user_id)
+        return ProductResponse.model_validate(product)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Career path generation failed: {str(e)}",
+        )
+
+
+@router.post("/generate-career-plan-1y/{user_id}", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
+def generate_career_plan_1y(
+    user_id: int,
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+):
+    """Generate 1-year career plan and save as product."""
+    try:
+        product = workflow_service.generate_and_save_career_plan_1y(user_id)
+        return ProductResponse.model_validate(product)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"1-year career plan generation failed: {str(e)}",
+        )
+
+
+@router.post("/generate-career-plan-3y/{user_id}", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
+def generate_career_plan_3y(
+    user_id: int,
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+):
+    """Generate 3-year career plan and save as product."""
+    try:
+        product = workflow_service.generate_and_save_career_plan_3y(user_id)
+        return ProductResponse.model_validate(product)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"3-year career plan generation failed: {str(e)}",
+        )
+
+
+@router.post("/generate-career-plan-5y/{user_id}", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
+def generate_career_plan_5y(
+    user_id: int,
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+):
+    """Generate 5+ year career plan and save as product."""
+    try:
+        product = workflow_service.generate_and_save_career_plan_5y(user_id)
+        return ProductResponse.model_validate(product)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"5-year career plan generation failed: {str(e)}",
+        )
+
+
+@router.post("/generate-linkedin-export/{user_id}", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
+def generate_linkedin_export(
+    user_id: int,
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+):
+    """Generate LinkedIn profile export optimization and save as product."""
+    try:
+        product = workflow_service.generate_and_save_linkedin_export(user_id)
+        return ProductResponse.model_validate(product)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"LinkedIn export generation failed: {str(e)}",
+        )
+
+
+class WorkflowStatusResponse(BaseModel):
+    status: str
+    current_step: str
+    needs_human_review: bool = False
+    is_draft: bool = False
+    is_validated: bool = False
+    error: Optional[str] = None
+    message: Optional[str] = None
+
+
+class ResumeWorkflowRequest(BaseModel):
+    human_decision: str  # "approve", "edit", or "reject"
+
+
+@router.get("/status/{user_id}", response_model=WorkflowStatusResponse)
+def get_workflow_status(
+    user_id: int,
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+):
+    """
+    Get current workflow status for a user.
+    
+    Returns:
+    - status: "not_started", "in_progress", "completed", "error"
+    - current_step: Current step in the workflow
+    - needs_human_review: Whether workflow is waiting for human input
+    - is_draft: Whether profile is still a draft
+    - is_validated: Whether profile has been validated
+    """
+    try:
+        status_info = workflow_service.get_workflow_status(user_id)
+        return WorkflowStatusResponse(**status_info)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get workflow status: {str(e)}",
+        )
+
+
+@router.post("/resume/{user_id}", response_model=WorkflowStatusResponse)
+def resume_workflow(
+    user_id: int,
+    request: ResumeWorkflowRequest,
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+):
+    """
+    Resume workflow after human decision.
+    
+    This endpoint resumes the workflow from a checkpoint after human review.
+    
+    human_decision options:
+    - "approve": Approve and continue
+    - "edit": User will edit data (workflow waits)
+    - "reject": Reject and stop workflow
+    """
+    if request.human_decision not in ["approve", "edit", "reject"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="human_decision must be 'approve', 'edit', or 'reject'",
+        )
+    
+    try:
+        result = workflow_service.resume_workflow(user_id, request.human_decision)
+        return WorkflowStatusResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to resume workflow: {str(e)}",
         )
 
