@@ -1011,4 +1011,295 @@ class WorkflowGraph:
         # This would use graph.stream() or graph.invoke() with updated state
         # For now, return empty dict - full implementation requires checkpoint API access
         return {}
+    
+    def get_graph_image(self, format: str = "png") -> bytes:
+        """
+        Generate a visual representation of the workflow graph using LangGraph's built-in visualization.
+        
+        Uses LangGraph's native methods:
+        - draw_mermaid_png() for PNG format
+        - draw_mermaid() + Mermaid API for SVG
+        - draw_png() as fallback
+        
+        Args:
+            format: Image format ("png", "svg", or "jpg")
+            
+        Returns:
+            Image bytes
+        """
+        try:
+            # Get the graph structure from LangGraph
+            graph_structure = self.graph.get_graph()
+            
+            # Use LangGraph's native PNG visualization
+            if format.lower() == "png":
+                try:
+                    # Try draw_mermaid_png first (most reliable)
+                    png_bytes = graph_structure.draw_mermaid_png()
+                    if png_bytes:
+                        return png_bytes
+                except Exception:
+                    try:
+                        # Fallback to draw_png
+                        png_bytes = graph_structure.draw_png()
+                        if png_bytes:
+                            return png_bytes
+                    except Exception:
+                        pass
+            
+            # For SVG format, get Mermaid and render via API
+            elif format.lower() == "svg":
+                try:
+                    mermaid_diagram = graph_structure.draw_mermaid()
+                    if mermaid_diagram:
+                        return self._create_graph_image_from_mermaid(mermaid_diagram, format)
+                except Exception:
+                    pass
+            
+            # For JPG format, get PNG and convert
+            elif format.lower() in ["jpg", "jpeg"]:
+                try:
+                    # Get PNG from LangGraph
+                    png_bytes = graph_structure.draw_mermaid_png()
+                    if png_bytes:
+                        # Convert PNG to JPG
+                        from PIL import Image
+                        import io
+                        from io import BytesIO
+                        
+                        img = Image.open(BytesIO(png_bytes))
+                        jpg_bytes = io.BytesIO()
+                        img.convert("RGB").save(jpg_bytes, format="JPEG", quality=95)
+                        return jpg_bytes.getvalue()
+                except Exception:
+                    try:
+                        # Fallback: get Mermaid and render as PNG then convert
+                        mermaid_diagram = graph_structure.draw_mermaid()
+                        if mermaid_diagram:
+                            png_bytes = self._create_graph_image_from_mermaid(mermaid_diagram, "png")
+                            if png_bytes:
+                                from PIL import Image
+                                import io
+                                from io import BytesIO
+                                
+                                img = Image.open(BytesIO(png_bytes))
+                                jpg_bytes = io.BytesIO()
+                                img.convert("RGB").save(jpg_bytes, format="JPEG", quality=95)
+                                return jpg_bytes.getvalue()
+                    except Exception:
+                        pass
+            
+            # Fallback: create a simple visual representation
+            return self._create_simple_graph_image(format)
+        except Exception as e:
+            # Ultimate fallback: return a simple text representation
+            return self._create_text_graph_image(format)
+    
+    def _create_graph_image_from_mermaid(self, mermaid_diagram: str, format: str) -> bytes:
+        """
+        Create image from Mermaid diagram using Mermaid.ink API (free public service).
+        
+        Args:
+            mermaid_diagram: Mermaid diagram syntax string
+            format: Image format ("png", "svg", or "jpg")
+            
+        Returns:
+            Image bytes
+        """
+        try:
+            import requests  # type: ignore
+            import base64
+            from io import BytesIO
+            
+            # Encode the Mermaid diagram (base64url encoding)
+            encoded_diagram = base64.urlsafe_b64encode(mermaid_diagram.encode()).decode()
+            
+            # For PNG format
+            if format.lower() == "png":
+                api_url = f"https://mermaid.ink/img/{encoded_diagram}"
+                response = requests.get(api_url, timeout=10)
+                if response.status_code == 200:
+                    return response.content
+            
+            # For SVG format
+            elif format.lower() == "svg":
+                api_url = f"https://mermaid.ink/svg/{encoded_diagram}"
+                response = requests.get(api_url, timeout=10)
+                if response.status_code == 200:
+                    return response.content
+            
+            # For JPG format, get PNG and convert
+            elif format.lower() in ["jpg", "jpeg"]:
+                api_url = f"https://mermaid.ink/img/{encoded_diagram}"
+                response = requests.get(api_url, timeout=10)
+                if response.status_code == 200:
+                    from PIL import Image
+                    import io
+                    
+                    img = Image.open(BytesIO(response.content))
+                    jpg_bytes = io.BytesIO()
+                    img.convert("RGB").save(jpg_bytes, format="JPEG", quality=95)
+                    return jpg_bytes.getvalue()
+                    
+        except Exception as e:
+            # If Mermaid API fails, fall back to simple visualization
+            pass
+        
+        # Fallback: create a simple visual representation
+        return self._create_simple_graph_image(format)
+    
+    def _create_simple_graph_image(self, format: str) -> bytes:
+        """Create a simple visual representation of the graph."""
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            import io
+            
+            # Create image
+            width, height = 2400, 1600
+            img = Image.new("RGB", (width, height), "white")
+            draw = ImageDraw.Draw(img)
+            
+            # Try to load a font, fallback to default if not available
+            try:
+                font_large = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 24)
+                font_medium = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 18)
+                font_small = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 14)
+            except:
+                font_large = ImageFont.load_default()
+                font_medium = ImageFont.load_default()
+                font_small = ImageFont.load_default()
+            
+            # Define nodes and their positions
+            nodes = {
+                "parse": (200, 200),
+                "save_draft": (200, 400),
+                "wait_confirmation": (200, 600),
+                "validate": (200, 800),
+                "check_validation": (200, 1000),
+                "select_product_type": (600, 1000),
+                "generate_cv": (1000, 800),
+                "generate_career_path": (1000, 1000),
+                "generate_career_plan_1y": (1000, 1200),
+                "generate_career_plan_3y": (1000, 1400),
+                "generate_career_plan_5y": (1400, 1200),
+                "generate_linkedin_export": (1400, 1000),
+                "save_product": (1800, 1000),
+                "END": (2000, 1000),
+            }
+            
+            # Draw nodes
+            node_width, node_height = 150, 60
+            for node_name, (x, y) in nodes.items():
+                # Draw rectangle
+                draw.rectangle(
+                    [x - node_width//2, y - node_height//2, x + node_width//2, y + node_height//2],
+                    fill="lightblue" if node_name in ["wait_confirmation", "save_product"] else "lightgreen",
+                    outline="black",
+                    width=2
+                )
+                # Draw text
+                text_bbox = draw.textbbox((0, 0), node_name, font=font_small)
+                text_width = text_bbox[2] - text_bbox[0]
+                text_height = text_bbox[3] - text_bbox[1]
+                draw.text(
+                    (x - text_width//2, y - text_height//2),
+                    node_name.replace("_", "\n"),
+                    fill="black",
+                    font=font_small
+                )
+            
+            # Draw edges
+            edges = [
+                ("parse", "save_draft"),
+                ("save_draft", "wait_confirmation"),
+                ("wait_confirmation", "validate"),
+                ("validate", "check_validation"),
+                ("check_validation", "select_product_type"),
+                ("select_product_type", "generate_cv"),
+                ("select_product_type", "generate_career_path"),
+                ("select_product_type", "generate_career_plan_1y"),
+                ("select_product_type", "generate_career_plan_3y"),
+                ("select_product_type", "generate_career_plan_5y"),
+                ("select_product_type", "generate_linkedin_export"),
+                ("generate_cv", "save_product"),
+                ("generate_career_path", "save_product"),
+                ("generate_career_plan_1y", "save_product"),
+                ("generate_career_plan_3y", "save_product"),
+                ("generate_career_plan_5y", "save_product"),
+                ("generate_linkedin_export", "save_product"),
+                ("save_product", "END"),
+            ]
+            
+            for start, end in edges:
+                if start in nodes and end in nodes:
+                    x1, y1 = nodes[start]
+                    x2, y2 = nodes[end]
+                    # Draw arrow
+                    draw.line([x1 + node_width//2, y1, x2 - node_width//2, y2], fill="black", width=2)
+            
+            # Add title
+            title = "Career Navigator Workflow Graph"
+            title_bbox = draw.textbbox((0, 0), title, font=font_large)
+            title_width = title_bbox[2] - title_bbox[0]
+            draw.text((width//2 - title_width//2, 50), title, fill="black", font=font_large)
+            
+            # Add legend
+            legend_y = 50
+            draw.rectangle([50, legend_y, 100, legend_y + 30], fill="lightgreen", outline="black")
+            draw.text((110, legend_y + 5), "Regular Node", fill="black", font=font_small)
+            draw.rectangle([250, legend_y, 300, legend_y + 30], fill="lightblue", outline="black")
+            draw.text((310, legend_y + 5), "Human-in-the-Loop", fill="black", font=font_small)
+            
+            # Save to bytes
+            img_bytes = io.BytesIO()
+            img.save(img_bytes, format=format.upper())
+            img_bytes.seek(0)
+            return img_bytes.getvalue()
+        except Exception as e:
+            # Fallback to text representation
+            return self._create_text_graph_image(format)
+    
+    def _create_text_graph_image(self, format: str) -> bytes:
+        """Create a simple text-based graph representation."""
+        from PIL import Image, ImageDraw, ImageFont
+        import io
+        
+        # Create a simple text diagram
+        diagram_text = """
+Career Navigator Workflow Graph
+
+parse → save_draft → wait_confirmation → validate → check_validation
+                                                          ↓
+                                              select_product_type
+                                                          ↓
+        ┌──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐
+        ↓              ↓              ↓              ↓              ↓              ↓
+generate_cv  generate_career_path  generate_career_plan_1y  generate_career_plan_3y  generate_career_plan_5y  generate_linkedin_export
+        └──────────────┴──────────────┴──────────────┴──────────────┴──────────────┘
+                                                          ↓
+                                                  save_product → END
+
+Human-in-the-Loop Checkpoints: wait_confirmation, save_product
+        """
+        
+        # Create image with text
+        img = Image.new("RGB", (1200, 800), "white")
+        draw = ImageDraw.Draw(img)
+        
+        try:
+            font = ImageFont.truetype("/System/Library/Fonts/Monaco.ttf", 14)
+        except:
+            font = ImageFont.load_default()
+        
+        # Draw text
+        y = 50
+        for line in diagram_text.strip().split("\n"):
+            draw.text((50, y), line, fill="black", font=font)
+            y += 20
+        
+        # Save to bytes
+        img_bytes = io.BytesIO()
+        img.save(img_bytes, format=format.upper())
+        img_bytes.seek(0)
+        return img_bytes.getvalue()
 

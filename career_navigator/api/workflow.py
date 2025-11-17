@@ -1,5 +1,6 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from career_navigator.infrastructure.database.session import get_db
@@ -393,5 +394,55 @@ def resume_workflow(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to resume workflow: {str(e)}",
+        )
+
+
+@router.get("/graph-image", response_class=Response)
+def get_workflow_graph_image(
+    format: str = Query("png", regex="^(png|svg|jpg|jpeg)$", description="Image format (png, svg, jpg, jpeg)"),
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+):
+    """
+    Generate and download the workflow graph as an image.
+    
+    This endpoint creates a visual representation of the LangGraph workflow
+    showing all nodes, edges, and human-in-the-loop checkpoints.
+    
+    Supported formats:
+    - png (default)
+    - svg
+    - jpg/jpeg
+    
+    Returns:
+        Image file ready for download
+    """
+    try:
+        # Normalize format
+        if format.lower() == "jpeg":
+            format = "jpg"
+        
+        # Get graph image from workflow service
+        image_bytes = workflow_service.get_workflow_graph_image(format.lower())
+        
+        # Determine content type
+        content_types = {
+            "png": "image/png",
+            "svg": "image/svg+xml",
+            "jpg": "image/jpeg",
+        }
+        content_type = content_types.get(format.lower(), "image/png")
+        
+        # Return image as downloadable file
+        return Response(
+            content=image_bytes,
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="workflow_graph.{format.lower()}"',
+            },
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate graph image: {str(e)}",
         )
 

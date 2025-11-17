@@ -262,4 +262,16 @@ class WorkflowService:
             "is_draft": False,
             "message": "Draft confirmed, ready for validation",
         }
+    
+    def get_workflow_graph_image(self, format: str = "png") -> bytes:
+        """
+        Generate a visual representation of the workflow graph.
+        
+        Args:
+            format: Image format ("png", "svg", or "jpg")
+            
+        Returns:
+            Image bytes
+        """
+        return self.workflow_graph.get_graph_image(format)
 
