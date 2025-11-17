@@ -820,8 +820,17 @@ class WorkflowGraph:
             from career_navigator.domain.models.product import GeneratedProduct
             
             # Determine product type and content
-            product_type_str = state.get("product_type", "cv")
-            product_type = ProductType(product_type_str)
+            # Map workflow product type strings to ProductType enum values
+            product_type_str = state.get("product_type") or "cv"
+            product_type_map: dict[str, ProductType] = {
+                "cv": ProductType.CV,
+                "career_path": ProductType.POSSIBLE_JOBS,  # career_path maps to POSSIBLE_JOBS
+                "career_plan_1y": ProductType.CAREER_PLAN_1Y,
+                "career_plan_3y": ProductType.CAREER_PLAN_3Y,
+                "career_plan_5y": ProductType.CAREER_PLAN_5Y,
+                "linkedin_export": ProductType.LINKEDIN_EXPORT,
+            }
+            product_type = product_type_map.get(product_type_str, ProductType.CV)
             
             content: dict[str, Any] = {}
             if product_type == ProductType.CV:
