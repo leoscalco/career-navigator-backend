@@ -622,3 +622,58 @@ def get_workflow_graph_image(
             detail=f"Failed to generate graph image: {str(e)}",
         )
 
+
+@router.get("/products/{user_id}", response_model=list[ProductResponse])
+def get_user_products(
+    user_id: int,
+    product_type: Optional[str] = Query(None, description="Filter by product type (cv, career_path, career_plan_1y, career_plan_3y, career_plan_5y, linkedin_export)"),
+    db: Session = Depends(get_db),
+):
+    """
+    Get all generated products for a user.
+    
+    This endpoint retrieves all products that were generated through the workflow
+    for a specific user. Optionally filter by product type.
+    
+    Args:
+        user_id: The ID of the user
+        product_type: Optional filter by product type
+        
+    Returns:
+        List of generated products
+    """
+    try:
+        product_repository = SQLAlchemyProductRepository(db)
+        
+        # If product_type filter is provided, map it to ProductType enum
+        if product_type:
+            from career_navigator.domain.models.product_type import ProductType
+            product_type_map = {
+                "cv": ProductType.CV,
+                "career_path": ProductType.POSSIBLE_JOBS,
+                "career_plan_1y": ProductType.CAREER_PLAN_1Y,
+                "career_plan_3y": ProductType.CAREER_PLAN_3Y,
+                "career_plan_5y": ProductType.CAREER_PLAN_5Y,
+                "linkedin_export": ProductType.LINKEDIN_EXPORT,
+            }
+            
+            mapped_type = product_type_map.get(product_type.lower())
+            if not mapped_type:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid product type: {product_type}. Valid types are: {', '.join(product_type_map.keys())}",
+                )
+            
+            products = product_repository.get_by_user_and_type(user_id, mapped_type)
+        else:
+            products = product_repository.get_by_user_id(user_id)
+        
+        return [ProductResponse.model_validate(p) for p in products]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve products: {str(e)}",
+        )
+
