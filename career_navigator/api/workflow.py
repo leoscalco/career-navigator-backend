@@ -1,8 +1,9 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+import io
 from career_navigator.infrastructure.database.session import get_db
 from career_navigator.infrastructure.llm.groq_adapter import GroqAdapter
 from career_navigator.infrastructure.repositories.user_repository import SQLAlchemyUserRepository
@@ -13,6 +14,7 @@ from career_navigator.infrastructure.repositories.academic_repository import SQL
 from career_navigator.infrastructure.repositories.product_repository import SQLAlchemyProductRepository
 from career_navigator.application.workflow_service import WorkflowService
 from career_navigator.api.schemas.product import ProductResponse
+from career_navigator.infrastructure.document_parser import DocumentParser
 
 router = APIRouter(prefix="/workflow", tags=["Workflow"])
 
@@ -21,6 +23,14 @@ class CVParseRequest(BaseModel):
     user_id: int
     cv_content: str
     linkedin_url: Optional[str] = None
+
+
+class CVFileParseRequest(BaseModel):
+    """Request model for file-based CV parsing (used internally)."""
+    user_id: int
+    cv_content: str
+    linkedin_url: Optional[str] = None
+    filename: Optional[str] = None
 
 
 class LinkedInParseRequest(BaseModel):
@@ -82,6 +92,9 @@ def parse_cv(
     """
     Step 1: Parse CV content and save as draft.
     
+    This endpoint accepts CV content as plain text.
+    For PDF/Word documents, use /parse-cv-file instead.
+    
     This endpoint:
     1. Parses the CV content using LLM
     2. Extracts structured data (profile, experiences, courses, academics)
@@ -104,6 +117,92 @@ def parse_cv(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to parse CV: {str(e)}",
+        )
+
+
+@router.post("/parse-cv-file", response_model=ParseResponse, status_code=status.HTTP_201_CREATED)
+async def parse_cv_file(
+    file: UploadFile = File(..., description="CV file (PDF, DOCX, or TXT)"),
+    user_id: int = Form(..., description="User ID to associate with the CV"),
+    linkedin_url: Optional[str] = Form(None, description="Optional LinkedIn profile URL"),
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+):
+    """
+    Step 1: Parse CV from uploaded file and save as draft.
+    
+    This endpoint accepts CV files in various formats:
+    - PDF (.pdf)
+    - Word documents (.docx)
+    - Plain text (.txt)
+    
+    The endpoint:
+    1. Extracts text from the uploaded document
+    2. Parses the CV content using LLM
+    3. Extracts structured data (profile, experiences, courses, academics)
+    4. Saves everything as draft in the database
+    5. Returns the IDs of created records
+    
+    Supported file formats: PDF, DOCX, TXT
+    Maximum file size: 10MB (configurable)
+    """
+    try:
+        # Read file content
+        file_content = await file.read()
+        
+        if len(file_content) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Uploaded file is empty",
+            )
+        
+        # Check file size (10MB limit)
+        max_size = 10 * 1024 * 1024  # 10MB
+        if len(file_content) > max_size:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File too large. Maximum size is {max_size / (1024*1024):.1f}MB",
+            )
+        
+        # Parse document based on file type
+        try:
+            cv_content = DocumentParser.parse_document(file_content, file.filename or "document")
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            )
+        except ImportError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Document parsing library not installed: {str(e)}",
+            )
+        
+        if not cv_content or not cv_content.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Could not extract text from the document. Please ensure the file contains readable text.",
+            )
+        
+        # Parse CV using workflow service
+        result = workflow_service.parse_and_save_cv(
+            user_id=user_id,
+            cv_content=cv_content,
+            linkedin_url=linkedin_url,
+        )
+        
+        return ParseResponse(**result)
+        
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to parse CV file: {str(e)}",
         )
 
 
