@@ -198,97 +198,55 @@ class WorkflowService:
             "academic_records": [a.model_dump() for a in academic_records],
         }
         
-        # Run validation directly (not through full workflow graph)
-        from career_navigator.domain.prompts import GUARDRAIL_VALIDATION_PROMPT
-        import json
+        # Run validation using workflow graph to ensure it's part of the same trace
+        # Get trace_id from profile if available, or create a new one
+        # For now, we'll create a new trace for validation, but ideally we'd store trace_id in profile
+        from langfuse import Langfuse
+        from career_navigator.config import settings
+        from opentelemetry import trace
         
-        prompt = GUARDRAIL_VALIDATION_PROMPT.format(
-            profile_data=json.dumps(validation_data, indent=2, default=str)
+        langfuse_client = Langfuse(
+            public_key=settings.LANGFUSE_PUBLIC_KEY,
+            secret_key=settings.LANGFUSE_SECRET_KEY,
+            host=settings.LANGFUSE_HOST,
         )
         
-        try:
-            response = self.llm.generate(prompt)
+        # Create trace using OpenTelemetry tracer
+        tracer = langfuse_client._otel_tracer
+        trace_id = langfuse_client.create_trace_id()
+        
+        # Start a new trace for validation - this ensures proper trace context
+        with tracer.start_as_current_span(
+            "profile_validation",
+            attributes={
+                "langfuse.trace.name": "profile_validation",
+                "langfuse.trace.id": trace_id,
+                "langfuse.user.id": str(user_id),
+                "linked_to_profile": str(profile.id),
+            },
+        ) as span:
+            # Set trace ID in context
+            span.set_attribute("langfuse.trace.id", trace_id)
             
-            # Extract JSON from response - handle markdown code blocks and extra text
-            response = response.strip()
+            # Use workflow graph's validate node to ensure proper trace context
+            initial_state = {
+                "user_id": user_id,
+                "input_type": "cv",  # Doesn't matter for validation
+                "is_confirmed": True,  # Skip confirmation step
+                "is_validated": False,  # Will be set by validation
+                "langfuse_trace_id": trace_id,  # Store trace ID in state for nodes to use
+            }
             
-            # Remove markdown code blocks
-            if response.startswith("```json"):
-                response = response[7:]
-            elif response.startswith("```"):
-                response = response[3:]
-            if response.endswith("```"):
-                response = response[:-3]
-            response = response.strip()
-            
-            # Try to find JSON object boundaries (handle extra text before/after)
-            # Look for first { and last } - handle nested objects
-            first_brace = response.find('{')
-            if first_brace == -1:
-                raise ValueError("No JSON object found in response")
-            
-            # Find matching closing brace (handle nested objects)
-            brace_count = 0
-            last_brace = -1
-            for i in range(first_brace, len(response)):
-                if response[i] == '{':
-                    brace_count += 1
-                elif response[i] == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        last_brace = i
-                        break
-            
-            if last_brace == -1 or last_brace <= first_brace:
-                raise ValueError("Invalid JSON structure in response")
-            
-            # Extract just the JSON object
-            json_str = response[first_brace:last_brace + 1]
-            
-            # Try to parse JSON
-            try:
-                validation_report = json.loads(json_str)
-            except json.JSONDecodeError as e:
-                # If parsing fails, try to extract a valid JSON subset
-                # Look for common validation report structure
-                import re
-                # Try to find is_valid field
-                is_valid_match = re.search(r'"is_valid"\s*:\s*(true|false)', json_str, re.IGNORECASE)
-                if is_valid_match:
-                    # Create a minimal valid report
-                    validation_report = {
-                        "is_valid": is_valid_match.group(1).lower() == "true",
-                        "errors": [],
-                        "warnings": [],
-                        "completeness_score": 0.8,
-                        "recommendations": ["Could not fully parse validation response"],
-                    }
-                else:
-                    raise ValueError(f"Failed to parse JSON: {str(e)}. Response: {response[:200]}")
-            
-            # Ensure required fields exist
-            if "is_valid" not in validation_report:
-                validation_report["is_valid"] = False
-            if "errors" not in validation_report:
-                validation_report["errors"] = []
-            if "warnings" not in validation_report:
-                validation_report["warnings"] = []
-            if "completeness_score" not in validation_report:
-                validation_report["completeness_score"] = 0.0
-            if "recommendations" not in validation_report:
-                validation_report["recommendations"] = []
-            
-            # Update profile validation status
-            profile.is_validated = validation_report.get("is_valid", False)
-            self.profile_repository.update(profile)
-            
-            return validation_report
-        except Exception as e:
-            # If validation fails completely, return a safe default
-            error_msg = str(e)
-            if "500" in error_msg or "internal server error" in error_msg.lower():
-                raise ValueError("LLM service temporarily unavailable. Please try again in a few moments.")
-            raise ValueError(f"Failed to validate profile: {error_msg}")
+            # Run just the validate node through the workflow graph
+            # This ensures it uses the same trace context
+            result = self.workflow_graph.run(initial_state, trace_id=trace_id)
+        
+        # Extract validation report from result
+        validation_report = result.get("validation_report")
+        if not validation_report:
+            raise ValueError("Validation failed: No validation report generated")
+        
+        return validation_report
 
     def generate_and_save_cv(self, user_id: int) -> GeneratedProduct:
         """

@@ -68,6 +68,9 @@ class ProfileResponse(BaseModel):
     additional_info: Optional[str]
     created_at: datetime
     updated_at: datetime
+    # User information (from User model) - populated by endpoint
+    name: Optional[str] = None
+    email: Optional[str] = None
 
     class Config:
         from_attributes = True

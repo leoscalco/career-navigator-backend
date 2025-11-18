@@ -53,6 +53,7 @@ def get_profile(
 def get_profile_by_user_id(
     user_id: int,
     repository: SQLAlchemyProfileRepository = Depends(get_profile_repository),
+    db: Session = Depends(get_db),
 ):
     """Get a profile by user ID."""
     profile = repository.get_by_user_id(user_id)
@@ -61,7 +62,21 @@ def get_profile_by_user_id(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Profile for user {user_id} not found",
         )
-    return ProfileResponse.model_validate(profile)
+    
+    # Get user information to include in response
+    from career_navigator.infrastructure.database.models import User
+    user = db.query(User).filter(User.id == user_id).first()
+    
+    # Convert profile to dict and add user info
+    profile_dict = ProfileResponse.model_validate(profile).model_dump()
+    if user:
+        # Use username as name (it contains the actual name from CV, with spaces preserved)
+        # Replace underscores back to spaces for display (since we stored it with underscores)
+        name = user.username.replace("_", " ") if user.username else None
+        profile_dict["name"] = name
+        profile_dict["email"] = user.email
+    
+    return ProfileResponse(**profile_dict)
 
 
 @router.put("/{profile_id}", response_model=ProfileResponse)

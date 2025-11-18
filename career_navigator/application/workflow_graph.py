@@ -424,38 +424,51 @@ class WorkflowGraph:
                     else:
                         user_group = UserGroup.INEXPERIENCED_NO_GOAL
                     
-                    # Generate username from name or email
-                    username = user_name.lower().replace(" ", "_") if user_name else user_email.split("@")[0]
-                    # Clean username (remove special chars, limit length)
-                    username = "".join(c for c in username if c.isalnum() or c in ["_", "-"])[:50]
-                    if not username:
-                        username = "user"
+                    # Use the actual name from CV as username (preserve the original name as much as possible)
+                    # Replace spaces with underscores for database storage, but keep the original name structure
+                    if user_name and user_name.strip():
+                        # Preserve the original name structure, just replace spaces with underscores for DB
+                        # Keep letters, numbers, hyphens, underscores, periods, and apostrophes
+                        username = "".join(c for c in user_name if c.isalnum() or c in [" ", "_", "-", ".", "'"])[:100].strip()
+                        # Replace spaces with underscores for database storage (we'll convert back for display)
+                        username = username.replace(" ", "_")
+                        if not username:
+                            username = user_email.split("@")[0]
+                    else:
+                        # Fallback to email prefix if no name
+                        username = user_email.split("@")[0]
                     
-                    # Ensure username is unique by appending number if needed
-                    # Since email is unique, we'll use a simple approach: append counter if email pattern exists
-                    base_username = username
-                    counter = 1
-                    # Check if a user with similar email pattern already exists
-                    test_email = f"{username}@temp.careernavigator.com"
-                    existing_test_user = self.user_repository.get_by_email(test_email)
-                    if existing_test_user:
-                        # Try variations until we find one that doesn't exist
-                        while counter < 1000:
-                            username = f"{base_username}_{counter}"
-                            test_email = f"{username}@temp.careernavigator.com"
-                            if not self.user_repository.get_by_email(test_email):
-                                break
-                            counter += 1
-                        if counter >= 1000:
-                            # Use hash of email as fallback
-                            username = f"{base_username}_{abs(hash(user_email)) % 10000}"
-                    
+                    # Try to create user with this username
+                    # If it fails due to uniqueness constraint, we'll append a number
                     new_user = DomainUser(
                         email=user_email,
-                        username=username,
+                        username=username,  # Use the actual name (minimally cleaned)
                         user_group=user_group,
                     )
-                    created_user = self.user_repository.create(new_user)
+                    
+                    # Try to create - if username conflict, append number
+                    try:
+                        created_user = self.user_repository.create(new_user)
+                    except Exception as e:
+                        # If username already exists, try with appended number
+                        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                            base_username = username
+                            counter = 1
+                            while counter < 1000:
+                                username = f"{base_username}_{counter}"
+                                new_user.username = username
+                                try:
+                                    created_user = self.user_repository.create(new_user)
+                                    break
+                                except Exception:
+                                    counter += 1
+                            if counter >= 1000:
+                                # Fallback: use hash
+                                username = f"{base_username}_{abs(hash(user_email)) % 10000}"
+                                new_user.username = username
+                                created_user = self.user_repository.create(new_user)
+                        else:
+                            raise
                     user_id = created_user.id
                     state["user_id"] = user_id
                     state["user_email"] = user_email
@@ -1184,6 +1197,9 @@ class WorkflowGraph:
             "job_experiences": job_experiences,
             "courses": courses,
             "academic_records": academic_records,
+            # Include user info so it's available in save_draft_node
+            "user_email": user_email,
+            "user_name": user_name,
         }
 
     def _parse_date(self, date_str: str | None) -> date | None:
