@@ -72,7 +72,15 @@ def get_profile_by_user_id(
     if user:
         # Use username as name (it contains the actual name from CV, with spaces preserved)
         # Replace underscores back to spaces for display (since we stored it with underscores)
-        name = user.username.replace("_", " ") if user.username else None
+        # Handle multiple consecutive underscores and replace all with single space
+        if user.username:
+            import re
+            # Replace all underscores (including multiple consecutive ones) with spaces
+            name = re.sub(r'_+', ' ', user.username).strip()
+            # Clean up multiple spaces
+            name = " ".join(name.split())
+        else:
+            name = None
         profile_dict["name"] = name
         profile_dict["email"] = user.email
     
