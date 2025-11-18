@@ -387,71 +387,120 @@ class WorkflowGraph:
             if not parsed_data:
                 raise ValueError("No parsed data to save")
             
-            # Create user if not exists (from parsed data)
+            # Get or create/update user (from parsed data)
             user_id = state.get("user_id")
-            if not user_id:
-                user_email = parsed_data.get("user_email") or state.get("user_email")
-                user_name = parsed_data.get("user_name") or state.get("user_name")
-                
-                if not user_email:
-                    # Generate placeholder email if not found
-                    content_hash = abs(hash(state.get('cv_content', state.get('linkedin_data', ''))[:50]))
-                    user_email = f"user_{content_hash}@temp.careernavigator.com"
-                
-                # Check if user already exists by email
-                from career_navigator.domain.models.user import User as DomainUser
+            user_email = parsed_data.get("user_email") or state.get("user_email")
+            user_name = parsed_data.get("user_name") or state.get("user_name")
+            
+            from career_navigator.domain.models.user import User as DomainUser
+            from career_navigator.domain.models.user_group import UserGroup
+            
+            existing_user = None
+            
+            # First, check if user_id is provided and user exists
+            if user_id:
+                existing_user = self.user_repository.get_by_id(user_id)
+            
+            # If no user found by ID, check by email
+            if not existing_user and user_email:
                 existing_user = self.user_repository.get_by_email(user_email)
-                
                 if existing_user:
                     user_id = existing_user.id
+            
+            if existing_user:
+                # Update existing user with new information from CV
+                # Determine user_group based on experience
+                job_experiences = parsed_data.get("job_experiences", [])
+                has_experience = len(job_experiences) > 0
+                has_goals = bool(parsed_data.get("career_goals") or parsed_data.get("short_term_goals") or parsed_data.get("long_term_goals"))
+                
+                if has_experience and has_goals:
+                    user_group = UserGroup.EXPERIENCED_CONTINUING
+                elif has_experience and not has_goals:
+                    user_group = UserGroup.EXPERIENCED_CHANGING
+                elif not has_experience and has_goals:
+                    user_group = UserGroup.INEXPERIENCED_WITH_GOAL
                 else:
-                    # Create new user
-                    # Determine user_group based on experience (default to inexperienced_no_goal)
-                    user_group = state.get("user_group") or "inexperienced_no_goal"
-                    from career_navigator.domain.models.user_group import UserGroup
-                    
-                    # Try to determine user group from parsed data
-                    job_experiences = parsed_data.get("job_experiences", [])
-                    has_experience = len(job_experiences) > 0
-                    has_goals = bool(parsed_data.get("career_goals") or parsed_data.get("short_term_goals") or parsed_data.get("long_term_goals"))
-                    
-                    if has_experience and has_goals:
-                        user_group = UserGroup.EXPERIENCED_CONTINUING
-                    elif has_experience and not has_goals:
-                        user_group = UserGroup.EXPERIENCED_CHANGING
-                    elif not has_experience and has_goals:
-                        user_group = UserGroup.INEXPERIENCED_WITH_GOAL
-                    else:
-                        user_group = UserGroup.INEXPERIENCED_NO_GOAL
-                    
-                    # Use the actual name from CV as username (preserve the original name as much as possible)
-                    # Replace spaces with underscores for database storage, but keep the original name structure
-                    if user_name and user_name.strip():
-                        # Preserve the original name structure, just replace spaces with underscores for DB
-                        # Keep letters, numbers, hyphens, underscores, periods, and apostrophes
-                        username = "".join(c for c in user_name if c.isalnum() or c in [" ", "_", "-", ".", "'"])[:100].strip()
-                        # Replace spaces with underscores for database storage (we'll convert back for display)
-                        username = username.replace(" ", "_")
-                        if not username:
-                            username = user_email.split("@")[0]
-                    else:
-                        # Fallback to email prefix if no name
+                    user_group = UserGroup.INEXPERIENCED_NO_GOAL
+                
+                # Update username if we have a new name from CV
+                username = existing_user.username
+                if user_name and user_name.strip():
+                    # Preserve the original name structure, just replace spaces with underscores for DB
+                    username = "".join(c for c in user_name if c.isalnum() or c in [" ", "_", "-", ".", "'"])[:100].strip()
+                    username = username.replace(" ", "_")
+                    if not username:
+                        username = existing_user.username or (user_email.split("@")[0] if user_email else None)
+                
+                # Update user with new information
+                updated_user = DomainUser(
+                    id=existing_user.id,
+                    email=user_email or existing_user.email,
+                    username=username,
+                    user_group=user_group,
+                )
+                self.user_repository.update(updated_user)
+                user_id = existing_user.id
+            else:
+                # Create new user
+                if not user_email:
+                    # Generate placeholder email if not found
+                    cv_content = state.get('cv_content') or state.get('linkedin_data') or ''
+                    content_hash = abs(hash(str(cv_content)[:50]))
+                    user_email = f"user_{content_hash}@temp.careernavigator.com"
+                
+                # Determine user_group based on experience (default to inexperienced_no_goal)
+                user_group: UserGroup
+                
+                # Try to determine user group from parsed data
+                job_experiences = parsed_data.get("job_experiences", [])
+                has_experience = len(job_experiences) > 0
+                has_goals = bool(parsed_data.get("career_goals") or parsed_data.get("short_term_goals") or parsed_data.get("long_term_goals"))
+                
+                if has_experience and has_goals:
+                    user_group = UserGroup.EXPERIENCED_CONTINUING
+                elif has_experience and not has_goals:
+                    user_group = UserGroup.EXPERIENCED_CHANGING
+                elif not has_experience and has_goals:
+                    user_group = UserGroup.INEXPERIENCED_WITH_GOAL
+                else:
+                    user_group = UserGroup.INEXPERIENCED_NO_GOAL
+                
+                # Use the actual name from CV as username (preserve the original name as much as possible)
+                # Replace spaces with underscores for database storage, but keep the original name structure
+                if user_name and user_name.strip():
+                    # Preserve the original name structure, just replace spaces with underscores for DB
+                    # Keep letters, numbers, hyphens, underscores, periods, and apostrophes
+                    username = "".join(c for c in user_name if c.isalnum() or c in [" ", "_", "-", ".", "'"])[:100].strip()
+                    # Replace spaces with underscores for database storage (we'll convert back for display)
+                    username = username.replace(" ", "_")
+                    if not username:
                         username = user_email.split("@")[0]
-                    
-                    # Try to create user with this username
-                    # If it fails due to uniqueness constraint, we'll append a number
-                    new_user = DomainUser(
-                        email=user_email,
-                        username=username,  # Use the actual name (minimally cleaned)
-                        user_group=user_group,
-                    )
-                    
-                    # Try to create - if username conflict, append number
-                    try:
-                        created_user = self.user_repository.create(new_user)
-                    except Exception as e:
-                        # If username already exists, try with appended number
-                        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                else:
+                    # Fallback to email prefix if no name
+                    username = user_email.split("@")[0]
+                
+                # Try to create user with this username
+                # If it fails due to uniqueness constraint, we'll append a number
+                new_user = DomainUser(
+                    email=user_email,
+                    username=username,  # Use the actual name (minimally cleaned)
+                    user_group=user_group,
+                )
+                
+                # Try to create - if username conflict, append number
+                try:
+                    created_user = self.user_repository.create(new_user)
+                except Exception as e:
+                    # If email or username already exists, try with appended number
+                    if "unique" in str(e).lower() or "duplicate" in str(e).lower() or "constraint" in str(e).lower():
+                        # Check if it's an email conflict - if so, get existing user
+                        existing_by_email = self.user_repository.get_by_email(user_email)
+                        if existing_by_email:
+                            # Use existing user
+                            created_user = existing_by_email
+                        else:
+                            # Username conflict, try with appended number
                             base_username = username
                             counter = 1
                             while counter < 1000:
@@ -467,12 +516,18 @@ class WorkflowGraph:
                                 username = f"{base_username}_{abs(hash(user_email)) % 10000}"
                                 new_user.username = username
                                 created_user = self.user_repository.create(new_user)
-                        else:
-                            raise
-                    user_id = created_user.id
-                    state["user_id"] = user_id
-                    state["user_email"] = user_email
-                    state["user_name"] = user_name
+                    else:
+                        raise
+                user_id = created_user.id
+            
+            # Update state with user info
+            state["user_id"] = user_id
+            state["user_email"] = user_email
+            state["user_name"] = user_name
+            
+            # Ensure user_id is set before proceeding
+            if not user_id:
+                raise ValueError("Failed to get or create user")
             
             # Get or create profile
             existing_profile = self.profile_repository.get_by_user_id(user_id)
