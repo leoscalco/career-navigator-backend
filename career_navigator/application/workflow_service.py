@@ -58,15 +58,44 @@ class WorkflowService:
         - course_ids: List of created course IDs
         - academic_record_ids: List of created academic record IDs
         """
-        initial_state = {
-            "user_id": user_id,  # Can be None
-            "input_type": "cv",
-            "cv_content": cv_content,
-            "linkedin_url": linkedin_url,
-            "is_confirmed": False,
-        }
+        # Create Langfuse trace for unified tracing using OpenTelemetry
+        from langfuse import Langfuse
+        from career_navigator.config import settings
+        from opentelemetry import trace
         
-        result = self.workflow_graph.run(initial_state)
+        langfuse_client = Langfuse(
+            public_key=settings.LANGFUSE_PUBLIC_KEY,
+            secret_key=settings.LANGFUSE_SECRET_KEY,
+            host=settings.LANGFUSE_HOST,
+        )
+        
+        # Create trace using OpenTelemetry tracer
+        tracer = langfuse_client._otel_tracer
+        trace_id = langfuse_client.create_trace_id()
+        
+        # Start a new trace
+        with tracer.start_as_current_span(
+            "cv_parsing_workflow",
+            attributes={
+                "langfuse.trace.name": "cv_parsing_workflow",
+                "langfuse.user.id": str(user_id) if user_id else "",
+                "input_type": "cv",
+                "has_linkedin_url": str(linkedin_url is not None),
+            },
+        ) as span:
+            # Set trace ID in context
+            span.set_attribute("langfuse.trace.id", trace_id)
+            
+            initial_state = {
+                "user_id": user_id,  # Can be None
+                "input_type": "cv",
+                "cv_content": cv_content,
+                "linkedin_url": linkedin_url,
+                "is_confirmed": False,
+                "langfuse_trace_id": trace_id,  # Store trace ID in state
+            }
+            
+            result = self.workflow_graph.run(initial_state, trace_id=trace_id)
         
         if result.get("error"):
             raise ValueError(result["error"])
@@ -91,15 +120,44 @@ class WorkflowService:
         
         If user_id is None, a new user will be created from the parsed LinkedIn data.
         """
-        initial_state = {
-            "user_id": user_id,  # Can be None
-            "input_type": "linkedin",
-            "linkedin_data": linkedin_data,
-            "linkedin_url": linkedin_url,
-            "is_confirmed": False,
-        }
+        # Create Langfuse trace for unified tracing using OpenTelemetry
+        from langfuse import Langfuse
+        from career_navigator.config import settings
+        from opentelemetry import trace
         
-        result = self.workflow_graph.run(initial_state)
+        langfuse_client = Langfuse(
+            public_key=settings.LANGFUSE_PUBLIC_KEY,
+            secret_key=settings.LANGFUSE_SECRET_KEY,
+            host=settings.LANGFUSE_HOST,
+        )
+        
+        # Create trace using OpenTelemetry tracer
+        tracer = langfuse_client._otel_tracer
+        trace_id = langfuse_client.create_trace_id()
+        
+        # Start a new trace
+        with tracer.start_as_current_span(
+            "linkedin_parsing_workflow",
+            attributes={
+                "langfuse.trace.name": "linkedin_parsing_workflow",
+                "langfuse.user.id": str(user_id) if user_id else "",
+                "input_type": "linkedin",
+                "has_linkedin_url": str(linkedin_url is not None),
+            },
+        ) as span:
+            # Set trace ID in context
+            span.set_attribute("langfuse.trace.id", trace_id)
+            
+            initial_state = {
+                "user_id": user_id,  # Can be None
+                "input_type": "linkedin",
+                "linkedin_data": linkedin_data,
+                "linkedin_url": linkedin_url,
+                "is_confirmed": False,
+                "langfuse_trace_id": trace_id,  # Store trace ID in state
+            }
+            
+            result = self.workflow_graph.run(initial_state, trace_id=trace_id)
         
         if result.get("error"):
             raise ValueError(result["error"])
@@ -275,18 +333,49 @@ class WorkflowService:
         if not profile.is_validated:
             raise ValueError("Profile must be validated before generating products")
         
-        # Run workflow with product type
-        # Skip parsing/validation steps and go directly to product generation
-        initial_state = {
-            "user_id": user_id,
-            "input_type": "cv",  # Doesn't matter, we're past parsing
-            "product_type": product_type,
-            "is_confirmed": True,
-            "is_validated": True,
-            "human_decision": "approve",  # Auto-approve product saving
-        }
+        # Retrieve trace_id from profile if available (to link to original parsing trace)
+        # For now, we'll create a new trace for product generation, but ideally we'd store trace_id in profile
+        # TODO: Store langfuse_trace_id in profile when saving draft, then retrieve it here
+        from langfuse import Langfuse
+        from career_navigator.config import settings
+        from opentelemetry import trace
         
-        result = self.workflow_graph.run(initial_state)
+        langfuse_client = Langfuse(
+            public_key=settings.LANGFUSE_PUBLIC_KEY,
+            secret_key=settings.LANGFUSE_SECRET_KEY,
+            host=settings.LANGFUSE_HOST,
+        )
+        
+        # Create trace using OpenTelemetry tracer
+        tracer = langfuse_client._otel_tracer
+        trace_id = langfuse_client.create_trace_id()
+        
+        # Start a new trace for product generation
+        with tracer.start_as_current_span(
+            f"{product_type}_generation",
+            attributes={
+                "langfuse.trace.name": f"{product_type}_generation",
+                "langfuse.user.id": str(user_id),
+                "product_type": product_type,
+                "linked_to_profile": str(profile.id),
+            },
+        ) as span:
+            # Set trace ID in context
+            span.set_attribute("langfuse.trace.id", trace_id)
+            
+            # Run workflow with product type
+            # Skip parsing/validation steps and go directly to product generation
+            initial_state = {
+                "user_id": user_id,
+                "input_type": "cv",  # Doesn't matter, we're past parsing
+                "product_type": product_type,
+                "is_confirmed": True,
+                "is_validated": True,
+                "human_decision": "approve",  # Auto-approve product saving
+                "langfuse_trace_id": trace_id,  # Link to trace
+            }
+            
+            result = self.workflow_graph.run(initial_state, trace_id=trace_id)
         
         if result.get("error"):
             error_msg = result["error"]

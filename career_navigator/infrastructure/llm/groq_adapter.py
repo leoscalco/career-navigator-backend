@@ -24,13 +24,15 @@ class GroqAdapter(LanguageModel):
             callbacks=[self.langfuse_callback_handler],
         )
 
-    def generate(self, prompt: str, max_retries: int = 3) -> str:
+    def generate(self, prompt: str, max_retries: int = 3, trace_id: str | None = None, span_id: str | None = None) -> str:
         """
         Generate text from prompt with retry logic.
         
         Args:
             prompt: The prompt to send to the LLM
             max_retries: Maximum number of retry attempts
+            trace_id: Optional Langfuse trace ID for unified tracing (not used directly, context is propagated via OpenTelemetry)
+            span_id: Optional Langfuse span ID to link this generation to a span (not used directly, context is propagated via OpenTelemetry)
             
         Returns:
             Generated text content
@@ -40,6 +42,10 @@ class GroqAdapter(LanguageModel):
         """
         import time
         from groq import GroqError
+        
+        # The Langfuse CallbackHandler automatically picks up the current OpenTelemetry trace context
+        # No need to pass trace_id explicitly - it's propagated through the OpenTelemetry context
+        # The callback handler will automatically link to the current trace/span
         
         last_error = None
         for attempt in range(max_retries):
