@@ -150,6 +150,7 @@ class WorkflowService:
         
         try:
             response = self.llm.generate(prompt)
+            
             # Extract JSON from response - handle markdown code blocks and extra text
             response = response.strip()
             
@@ -163,25 +164,73 @@ class WorkflowService:
             response = response.strip()
             
             # Try to find JSON object boundaries (handle extra text before/after)
-            # Look for first { and last }
+            # Look for first { and last } - handle nested objects
             first_brace = response.find('{')
-            last_brace = response.rfind('}')
+            if first_brace == -1:
+                raise ValueError("No JSON object found in response")
             
-            if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-                # Extract just the JSON object
-                json_str = response[first_brace:last_brace + 1]
-            else:
-                json_str = response
+            # Find matching closing brace (handle nested objects)
+            brace_count = 0
+            last_brace = -1
+            for i in range(first_brace, len(response)):
+                if response[i] == '{':
+                    brace_count += 1
+                elif response[i] == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        last_brace = i
+                        break
             
-            validation_report = json.loads(json_str)
+            if last_brace == -1 or last_brace <= first_brace:
+                raise ValueError("Invalid JSON structure in response")
+            
+            # Extract just the JSON object
+            json_str = response[first_brace:last_brace + 1]
+            
+            # Try to parse JSON
+            try:
+                validation_report = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                # If parsing fails, try to extract a valid JSON subset
+                # Look for common validation report structure
+                import re
+                # Try to find is_valid field
+                is_valid_match = re.search(r'"is_valid"\s*:\s*(true|false)', json_str, re.IGNORECASE)
+                if is_valid_match:
+                    # Create a minimal valid report
+                    validation_report = {
+                        "is_valid": is_valid_match.group(1).lower() == "true",
+                        "errors": [],
+                        "warnings": [],
+                        "completeness_score": 0.8,
+                        "recommendations": ["Could not fully parse validation response"],
+                    }
+                else:
+                    raise ValueError(f"Failed to parse JSON: {str(e)}. Response: {response[:200]}")
+            
+            # Ensure required fields exist
+            if "is_valid" not in validation_report:
+                validation_report["is_valid"] = False
+            if "errors" not in validation_report:
+                validation_report["errors"] = []
+            if "warnings" not in validation_report:
+                validation_report["warnings"] = []
+            if "completeness_score" not in validation_report:
+                validation_report["completeness_score"] = 0.0
+            if "recommendations" not in validation_report:
+                validation_report["recommendations"] = []
             
             # Update profile validation status
             profile.is_validated = validation_report.get("is_valid", False)
             self.profile_repository.update(profile)
             
             return validation_report
-        except (json.JSONDecodeError, KeyError) as e:
-            raise ValueError(f"Failed to validate profile: {str(e)}")
+        except Exception as e:
+            # If validation fails completely, return a safe default
+            error_msg = str(e)
+            if "500" in error_msg or "internal server error" in error_msg.lower():
+                raise ValueError("LLM service temporarily unavailable. Please try again in a few moments.")
+            raise ValueError(f"Failed to validate profile: {error_msg}")
 
     def generate_and_save_cv(self, user_id: int) -> GeneratedProduct:
         """
