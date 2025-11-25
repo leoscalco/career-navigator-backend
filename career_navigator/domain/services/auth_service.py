@@ -8,7 +8,13 @@ from passlib.context import CryptContext
 from career_navigator.config import settings
 
 # Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Use bcrypt directly to avoid passlib compatibility issues
+try:
+    import bcrypt
+    USE_DIRECT_BCRYPT = True
+except ImportError:
+    USE_DIRECT_BCRYPT = False
+    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # JWT settings
 SECRET_KEY = getattr(settings, "SECRET_KEY", "your-secret-key-change-in-production")
@@ -22,11 +28,18 @@ class AuthService:
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
         """Verify a password against its hash."""
+        if USE_DIRECT_BCRYPT:
+            return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
         return pwd_context.verify(plain_password, hashed_password)
     
     @staticmethod
     def get_password_hash(password: str) -> str:
         """Hash a password."""
+        if USE_DIRECT_BCRYPT:
+            # Generate salt and hash password
+            salt = bcrypt.gensalt()
+            hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+            return hashed.decode('utf-8')
         return pwd_context.hash(password)
     
     @staticmethod

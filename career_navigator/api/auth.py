@@ -166,6 +166,9 @@ def get_current_user_info(current_user: DomainUser = Depends(get_current_user)):
 @router.get("/oauth/{provider}/authorize")
 def oauth_authorize(provider: str):
     """Get OAuth authorization URL for the provider."""
+    # Build redirect URI with provider
+    redirect_uri = f"{settings.OAUTH_REDIRECT_URI}/{provider}"
+    
     if provider == "google":
         if not settings.GOOGLE_CLIENT_ID:
             raise HTTPException(
@@ -176,7 +179,7 @@ def oauth_authorize(provider: str):
         auth_url = (
             f"https://accounts.google.com/o/oauth2/v2/auth?"
             f"client_id={settings.GOOGLE_CLIENT_ID}&"
-            f"redirect_uri={settings.OAUTH_REDIRECT_URI}&"
+            f"redirect_uri={redirect_uri}&"
             f"response_type=code&"
             f"scope=openid email profile&"
             f"state={state}"
@@ -193,7 +196,7 @@ def oauth_authorize(provider: str):
         auth_url = (
             f"https://github.com/login/oauth/authorize?"
             f"client_id={settings.GITHUB_CLIENT_ID}&"
-            f"redirect_uri={settings.OAUTH_REDIRECT_URI}&"
+            f"redirect_uri={redirect_uri}&"
             f"scope=user:email&"
             f"state={state}"
         )
@@ -223,6 +226,7 @@ async def oauth_callback(
             )
         
         # Exchange code for token
+        redirect_uri = f"{settings.OAUTH_REDIRECT_URI}/{provider}"
         async with httpx.AsyncClient() as client:
             token_response = await client.post(
                 "https://oauth2.googleapis.com/token",
@@ -230,7 +234,7 @@ async def oauth_callback(
                     "code": callback_data.code,
                     "client_id": settings.GOOGLE_CLIENT_ID,
                     "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                    "redirect_uri": settings.OAUTH_REDIRECT_URI,
+                    "redirect_uri": redirect_uri,
                     "grant_type": "authorization_code",
                 },
             )
@@ -266,6 +270,7 @@ async def oauth_callback(
             )
         
         # Exchange code for token
+        redirect_uri = f"{settings.OAUTH_REDIRECT_URI}/{provider}"
         async with httpx.AsyncClient() as client:
             token_response = await client.post(
                 "https://github.com/login/oauth/access_token",
@@ -273,7 +278,7 @@ async def oauth_callback(
                     "code": callback_data.code,
                     "client_id": settings.GITHUB_CLIENT_ID,
                     "client_secret": settings.GITHUB_CLIENT_SECRET,
-                    "redirect_uri": settings.OAUTH_REDIRECT_URI,
+                    "redirect_uri": redirect_uri,
                 },
                 headers={"Accept": "application/json"},
             )

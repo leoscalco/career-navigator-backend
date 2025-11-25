@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     GITHUB_CLIENT_ID: str = ""
     GITHUB_CLIENT_SECRET: str = ""
     OAUTH_REDIRECT_URI: str = "http://localhost:5173/auth/callback"
+    
+    # Note: For OAuth redirect URI, use format: http://localhost:5173/auth/callback/{provider}
+    # The frontend will handle routing to the correct callback handler
 
 
 settings = Settings()
