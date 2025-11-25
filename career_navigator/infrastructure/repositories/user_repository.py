@@ -14,6 +14,12 @@ class SQLAlchemyUserRepository(UserRepository):
             email=user.email,
             username=user.username,
             user_group=user.user_group.value,
+            password_hash=user.password_hash,
+            is_active=user.is_active if hasattr(user, 'is_active') else True,
+            is_verified=user.is_verified if hasattr(user, 'is_verified') else False,
+            oauth_provider=user.oauth_provider if hasattr(user, 'oauth_provider') else None,
+            oauth_provider_id=user.oauth_provider_id if hasattr(user, 'oauth_provider_id') else None,
+            oauth_access_token=user.oauth_access_token if hasattr(user, 'oauth_access_token') else None,
         )
         self.db.add(db_user)
         self.db.commit()
@@ -62,6 +68,12 @@ class SQLAlchemyUserRepository(UserRepository):
             email=db_user.email,
             username=db_user.username,
             user_group=UserGroup(db_user.user_group),
+            password_hash=db_user.password_hash,
+            is_active=db_user.is_active,
+            is_verified=db_user.is_verified,
+            oauth_provider=db_user.oauth_provider,
+            oauth_provider_id=db_user.oauth_provider_id,
+            oauth_access_token=db_user.oauth_access_token,
             created_at=db_user.created_at,
             updated_at=db_user.updated_at,
         )

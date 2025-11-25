@@ -19,6 +19,16 @@ class Settings(BaseSettings):
     
     # Database
     DATABASE_URL: str = "postgresql://career_navigator:career_navigator_password@localhost:5433/career_navigator"
+    
+    # Authentication
+    SECRET_KEY: str = "your-secret-key-change-in-production-use-openssl-rand-hex-32"
+    
+    # OAuth Providers
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GITHUB_CLIENT_ID: str = ""
+    GITHUB_CLIENT_SECRET: str = ""
+    OAUTH_REDIRECT_URI: str = "http://localhost:5173/auth/callback"
 
 
 settings = Settings()

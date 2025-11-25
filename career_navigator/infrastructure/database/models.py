@@ -38,6 +38,17 @@ class User(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     username = Column(String(100), unique=True, index=True)
     user_group = Column(Enum(UserGroup, values_callable=lambda x: [e.value for e in x]), nullable=False)
+    
+    # Authentication fields
+    password_hash = Column(String(255), nullable=True)  # NULL for OAuth-only users
+    is_active = Column(Boolean, default=True, nullable=False)
+    is_verified = Column(Boolean, default=False, nullable=False)  # Email verification
+    
+    # OAuth fields
+    oauth_provider = Column(String(50), nullable=True)  # 'google', 'github', 'linkedin', etc.
+    oauth_provider_id = Column(String(255), nullable=True)  # Provider's user ID
+    oauth_access_token = Column(Text, nullable=True)  # Encrypted OAuth token
+    
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
