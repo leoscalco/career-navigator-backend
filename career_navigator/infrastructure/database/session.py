@@ -3,7 +3,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from career_navigator.config import settings
 from career_navigator.infrastructure.database.base import Base
 
-engine = create_engine(settings.DATABASE_URL, echo=True)
+engine = create_engine(settings.DATABASE_URL, echo=False)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

@@ -64,6 +64,9 @@ class WorkflowState(TypedDict):
     needs_human_review: bool
     human_decision: str | None  # "approve", "edit", "reject"
     
+    # Langfuse tracing
+    langfuse_trace_id: str | None  # Trace ID for unified tracing across workflow
+    
     # Error handling
     error: str | None
     current_step: str
@@ -101,8 +104,64 @@ class WorkflowGraph:
         # Create checkpointer for human-in-the-loop (state persistence)
         self.checkpointer = MemorySaver()
         
+        # Langfuse client for tracing (initialized lazily)
+        self._langfuse_client = None
+        self._current_trace_id = None
+        # Store trace_id by user_id for unified tracing across workflow steps
+        self._user_trace_ids: dict[int, str] = {}
+        
         # Build the graph
         self.graph = self._build_graph()
+    
+    def _get_langfuse_client(self):
+        """Get or create Langfuse client."""
+        if self._langfuse_client is None:
+            from langfuse import Langfuse
+            from career_navigator.config import settings
+            self._langfuse_client = Langfuse(
+                public_key=settings.LANGFUSE_PUBLIC_KEY,
+                secret_key=settings.LANGFUSE_SECRET_KEY,
+                host=settings.LANGFUSE_HOST,
+            )
+        return self._langfuse_client
+    
+    def _create_span_context(self, node_name: str, trace_id: str | None = None, metadata: dict | None = None):
+        """Create a Langfuse span context for a workflow node using OpenTelemetry.
+        
+        Returns a context manager that should be used with 'with' statement.
+        The OpenTelemetry context will be automatically propagated to LangChain callbacks.
+        """
+        if not trace_id:
+            trace_id = self._current_trace_id
+        
+        if not trace_id:
+            # Return a no-op context manager if no trace_id
+            from contextlib import nullcontext
+            return nullcontext()
+        
+        try:
+            client = self._get_langfuse_client()
+            tracer = client._otel_tracer
+            
+            # Create span within the current trace context
+            # Use start_as_current_span for proper context propagation
+            # This will automatically propagate to LangChain callbacks
+            span_context = tracer.start_as_current_span(
+                node_name,
+                attributes={
+                    "langfuse.span.name": node_name,
+                    "langfuse.trace.id": trace_id,
+                    **(metadata or {}),
+                },
+            )
+            return span_context
+        except Exception as e:
+            # If tracing fails, continue without it
+            # Log error for debugging but don't break workflow
+            import logging
+            from contextlib import nullcontext
+            logging.warning(f"Failed to create Langfuse span: {e}")
+            return nullcontext()
 
     def _build_graph(self):
         """
@@ -217,52 +276,71 @@ class WorkflowGraph:
 
     def _parse_node(self, state: WorkflowState) -> WorkflowState:
         """Parse CV or LinkedIn content."""
-        try:
-            state["current_step"] = "parsing"
-            
-            # Skip parsing if we're already past this step (e.g., for product generation)
-            # If profile is validated and product_type is set, skip directly to product generation
-            user_id = state.get("user_id")
-            if state.get("is_validated") and state.get("product_type") and user_id:
-                profile = self.profile_repository.get_by_user_id(user_id)
-                if profile and profile.is_validated:
-                    # Skip all parsing/validation steps, go directly to product generation
-                    # Set parsed_data to None (not empty dict) so save_draft can detect the skip
-                    state["parsed_data"] = None
-                    state["is_confirmed"] = True  # Ensure confirmation is set
-                    state["error"] = None
-                    return state
-            
-            # Skip parsing if we're already past this step (e.g., for validation-only calls)
-            # Check if profile already exists and we're just validating
-            user_id = state.get("user_id")
-            if state.get("is_confirmed") and user_id:
-                profile = self.profile_repository.get_by_user_id(user_id)
-                if profile and not state.get("cv_content") and not state.get("linkedin_data"):
-                    # Skip parsing, go directly to next step
-                    state["parsed_data"] = None  # None, will be skipped in save_draft
-                    state["error"] = None
-                    return state
-            
-            if state["input_type"] == "cv":
-                if not state.get("cv_content"):
-                    raise ValueError("CV content is required")
-                prompt = CV_PARSING_PROMPT.format(cv_content=state["cv_content"])
-            else:  # linkedin
-                if not state.get("linkedin_data"):
-                    raise ValueError("LinkedIn data is required")
-                prompt = LINKEDIN_PARSING_PROMPT.format(linkedin_data=state["linkedin_data"])
-            
-            response = self.llm.generate(prompt)
-            response = self._extract_json(response)
-            parsed_data = json.loads(response)
-            
-            state["parsed_data"] = self._structure_parsed_data(parsed_data)
-            state["error"] = None
-            
-        except Exception as e:
-            state["error"] = f"Parsing failed: {str(e)}"
-            state["current_step"] = "error"
+        trace_id = state.get("langfuse_trace_id")
+        span_context = self._create_span_context("parse", trace_id, {"input_type": state.get("input_type")})
+        
+        # Use span context manager - OpenTelemetry context will be propagated to LLM calls
+        with span_context:
+            try:
+                state["current_step"] = "parsing"
+                
+                # Skip parsing if we're already past this step (e.g., for product generation)
+                # If profile is validated and product_type is set, skip directly to product generation
+                user_id = state.get("user_id")
+                if state.get("is_validated") and state.get("product_type") and user_id:
+                    profile = self.profile_repository.get_by_user_id(user_id)
+                    if profile and profile.is_validated:
+                        # Skip all parsing/validation steps, go directly to product generation
+                        # Set parsed_data to None (not empty dict) so save_draft can detect the skip
+                        state["parsed_data"] = None
+                        state["is_confirmed"] = True  # Ensure confirmation is set
+                        state["error"] = None
+                        return state
+                
+                # Skip parsing if we're already past this step (e.g., for validation-only calls)
+                # Check if profile already exists and we're just validating
+                user_id = state.get("user_id")
+                if state.get("is_confirmed") and user_id:
+                    profile = self.profile_repository.get_by_user_id(user_id)
+                    if profile and not state.get("cv_content") and not state.get("linkedin_data"):
+                        # Skip parsing, go directly to next step
+                        state["parsed_data"] = None  # None, will be skipped in save_draft
+                        state["error"] = None
+                        return state
+                
+                if state["input_type"] == "cv":
+                    if not state.get("cv_content"):
+                        raise ValueError("CV content is required")
+                    prompt = CV_PARSING_PROMPT.format(cv_content=state["cv_content"])
+                else:  # linkedin
+                    if not state.get("linkedin_data"):
+                        raise ValueError("LinkedIn data is required")
+                    prompt = LINKEDIN_PARSING_PROMPT.format(linkedin_data=state["linkedin_data"])
+                
+                response = self.llm.generate(prompt, trace_id=trace_id)
+                response = self._extract_json(response)
+                parsed_data = json.loads(response)
+                
+                state["parsed_data"] = self._structure_parsed_data(parsed_data)
+                state["error"] = None
+                
+                # Set span attributes for success
+                from opentelemetry import trace
+                span = trace.get_current_span()
+                if span and span.is_recording():
+                    span.set_attribute("status", "success")
+                    span.set_attribute("has_parsed_data", "true")
+                
+            except Exception as e:
+                state["error"] = f"Parsing failed: {str(e)}"
+                state["current_step"] = "error"
+                # Set span attributes for error
+                from opentelemetry import trace
+                span = trace.get_current_span()
+                if span and span.is_recording():
+                    span.set_attribute("status", "error")
+                    span.set_attribute("error", str(e))
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
         
         return state
 
@@ -311,79 +389,147 @@ class WorkflowGraph:
             if not parsed_data:
                 raise ValueError("No parsed data to save")
             
-            # Create user if not exists (from parsed data)
+            # Get or create/update user (from parsed data)
             user_id = state.get("user_id")
-            if not user_id:
-                user_email = parsed_data.get("user_email") or state.get("user_email")
-                user_name = parsed_data.get("user_name") or state.get("user_name")
-                
-                if not user_email:
-                    # Generate placeholder email if not found
-                    content_hash = abs(hash(state.get('cv_content', state.get('linkedin_data', ''))[:50]))
-                    user_email = f"user_{content_hash}@temp.careernavigator.com"
-                
-                # Check if user already exists by email
-                from career_navigator.domain.models.user import User as DomainUser
+            user_email = parsed_data.get("user_email") or state.get("user_email")
+            user_name = parsed_data.get("user_name") or state.get("user_name")
+            
+            from career_navigator.domain.models.user import User as DomainUser
+            from career_navigator.domain.models.user_group import UserGroup
+            
+            existing_user = None
+            
+            # First, check if user_id is provided and user exists
+            if user_id:
+                existing_user = self.user_repository.get_by_id(user_id)
+            
+            # If no user found by ID, check by email
+            if not existing_user and user_email:
                 existing_user = self.user_repository.get_by_email(user_email)
-                
                 if existing_user:
                     user_id = existing_user.id
+            
+            if existing_user:
+                # Update existing user with new information from CV
+                # Determine user_group based on experience
+                job_experiences = parsed_data.get("job_experiences", [])
+                has_experience = len(job_experiences) > 0
+                has_goals = bool(parsed_data.get("career_goals") or parsed_data.get("short_term_goals") or parsed_data.get("long_term_goals"))
+                
+                if has_experience and has_goals:
+                    updated_user_group = UserGroup.EXPERIENCED_CONTINUING
+                elif has_experience and not has_goals:
+                    updated_user_group = UserGroup.EXPERIENCED_CHANGING
+                elif not has_experience and has_goals:
+                    updated_user_group = UserGroup.INEXPERIENCED_WITH_GOAL
                 else:
-                    # Create new user
-                    # Determine user_group based on experience (default to inexperienced_no_goal)
-                    user_group = state.get("user_group") or "inexperienced_no_goal"
-                    from career_navigator.domain.models.user_group import UserGroup
-                    
-                    # Try to determine user group from parsed data
-                    job_experiences = parsed_data.get("job_experiences", [])
-                    has_experience = len(job_experiences) > 0
-                    has_goals = bool(parsed_data.get("career_goals") or parsed_data.get("short_term_goals") or parsed_data.get("long_term_goals"))
-                    
-                    if has_experience and has_goals:
-                        user_group = UserGroup.EXPERIENCED_CONTINUING
-                    elif has_experience and not has_goals:
-                        user_group = UserGroup.EXPERIENCED_CHANGING
-                    elif not has_experience and has_goals:
-                        user_group = UserGroup.INEXPERIENCED_WITH_GOAL
-                    else:
-                        user_group = UserGroup.INEXPERIENCED_NO_GOAL
-                    
-                    # Generate username from name or email
-                    username = user_name.lower().replace(" ", "_") if user_name else user_email.split("@")[0]
-                    # Clean username (remove special chars, limit length)
-                    username = "".join(c for c in username if c.isalnum() or c in ["_", "-"])[:50]
+                    updated_user_group = UserGroup.INEXPERIENCED_NO_GOAL
+                
+                # Update username if we have a new name from CV
+                username = existing_user.username
+                if user_name and user_name.strip():
+                    # Preserve the original name structure, just replace spaces with underscores for DB
+                    username = "".join(c for c in user_name if c.isalnum() or c in [" ", "_", "-", ".", "'"])[:100].strip()
+                    username = username.replace(" ", "_")
                     if not username:
-                        username = "user"
-                    
-                    # Ensure username is unique by appending number if needed
-                    # Since email is unique, we'll use a simple approach: append counter if email pattern exists
-                    base_username = username
-                    counter = 1
-                    # Check if a user with similar email pattern already exists
-                    test_email = f"{username}@temp.careernavigator.com"
-                    existing_test_user = self.user_repository.get_by_email(test_email)
-                    if existing_test_user:
-                        # Try variations until we find one that doesn't exist
-                        while counter < 1000:
-                            username = f"{base_username}_{counter}"
-                            test_email = f"{username}@temp.careernavigator.com"
-                            if not self.user_repository.get_by_email(test_email):
-                                break
-                            counter += 1
-                        if counter >= 1000:
-                            # Use hash of email as fallback
-                            username = f"{base_username}_{abs(hash(user_email)) % 10000}"
-                    
-                    new_user = DomainUser(
-                        email=user_email,
-                        username=username,
-                        user_group=user_group,
-                    )
+                        username = existing_user.username or (user_email.split("@")[0] if user_email else None)
+                
+                # Update user with new information
+                updated_user = DomainUser(
+                    id=existing_user.id,
+                    email=user_email or existing_user.email,
+                    username=username,
+                    user_group=updated_user_group,
+                )
+                self.user_repository.update(updated_user)
+                user_id = existing_user.id
+            else:
+                # Create new user
+                if not user_email:
+                    # Generate placeholder email if not found
+                    cv_content = state.get('cv_content') or state.get('linkedin_data') or ''
+                    content_hash = abs(hash(str(cv_content)[:50]))
+                    user_email = f"user_{content_hash}@temp.careernavigator.com"
+                
+                # Determine user_group based on experience (default to inexperienced_no_goal)
+                user_group: UserGroup
+                
+                # Try to determine user group from parsed data
+                job_experiences = parsed_data.get("job_experiences", [])
+                has_experience = len(job_experiences) > 0
+                has_goals = bool(parsed_data.get("career_goals") or parsed_data.get("short_term_goals") or parsed_data.get("long_term_goals"))
+                
+                if has_experience and has_goals:
+                    user_group = UserGroup.EXPERIENCED_CONTINUING
+                elif has_experience and not has_goals:
+                    user_group = UserGroup.EXPERIENCED_CHANGING
+                elif not has_experience and has_goals:
+                    user_group = UserGroup.INEXPERIENCED_WITH_GOAL
+                else:
+                    user_group = UserGroup.INEXPERIENCED_NO_GOAL
+                
+                # Use the actual name from CV as username (preserve the original name as much as possible)
+                # Replace spaces with underscores for database storage, but keep the original name structure
+                if user_name and user_name.strip():
+                    # Preserve the original name structure, just replace spaces with underscores for DB
+                    # Keep letters, numbers, hyphens, underscores, periods, and apostrophes
+                    username = "".join(c for c in user_name if c.isalnum() or c in [" ", "_", "-", ".", "'"])[:100].strip()
+                    # Replace spaces with underscores for database storage (we'll convert back for display)
+                    username = username.replace(" ", "_")
+                    if not username:
+                        username = user_email.split("@")[0]
+                else:
+                    # Fallback to email prefix if no name
+                    username = user_email.split("@")[0]
+                
+                # Try to create user with this username
+                # If it fails due to uniqueness constraint, we'll append a number
+                new_user = DomainUser(
+                    email=user_email,
+                    username=username,  # Use the actual name (minimally cleaned)
+                    user_group=user_group,
+                )
+                
+                # Try to create - if username conflict, append number
+                try:
                     created_user = self.user_repository.create(new_user)
-                    user_id = created_user.id
-                    state["user_id"] = user_id
-                    state["user_email"] = user_email
-                    state["user_name"] = user_name
+                except Exception as e:
+                    # If email or username already exists, try with appended number
+                    if "unique" in str(e).lower() or "duplicate" in str(e).lower() or "constraint" in str(e).lower():
+                        # Check if it's an email conflict - if so, get existing user
+                        existing_by_email = self.user_repository.get_by_email(user_email)
+                        if existing_by_email:
+                            # Use existing user
+                            created_user = existing_by_email
+                        else:
+                            # Username conflict, try with appended number
+                            base_username = username
+                            counter = 1
+                            while counter < 1000:
+                                username = f"{base_username}_{counter}"
+                                new_user.username = username
+                                try:
+                                    created_user = self.user_repository.create(new_user)
+                                    break
+                                except Exception:
+                                    counter += 1
+                            if counter >= 1000:
+                                # Fallback: use hash
+                                username = f"{base_username}_{abs(hash(user_email)) % 10000}"
+                                new_user.username = username
+                                created_user = self.user_repository.create(new_user)
+                    else:
+                        raise
+                user_id = created_user.id
+            
+            # Update state with user info
+            state["user_id"] = user_id
+            state["user_email"] = user_email
+            state["user_name"] = user_name
+            
+            # Ensure user_id is set before proceeding
+            if not user_id:
+                raise ValueError("Failed to get or create user")
             
             # Get or create profile
             existing_profile = self.profile_repository.get_by_user_id(user_id)
@@ -502,46 +648,65 @@ class WorkflowGraph:
         if state.get("error"):
             return state
         
-        try:
-            state["current_step"] = "validating"
-            
-            profile = self.profile_repository.get_by_user_id(state["user_id"])
-            if not profile:
-                raise ValueError(f"Profile not found for user {state['user_id']}")
-            
-            job_experiences = self.job_repository.get_by_user_id(state["user_id"])
-            courses = self.course_repository.get_by_user_id(state["user_id"])
-            academic_records = self.academic_repository.get_by_user_id(state["user_id"])
-            
-            # Prepare validation data for middleware
-            validation_data = {
-                "profile": profile.model_dump(),
-                "job_experiences": [j.model_dump() for j in job_experiences],
-                "courses": [c.model_dump() for c in courses],
-                "academic_records": [a.model_dump() for a in academic_records],
-            }
-            
-            # Guardrails validation using LLM
-            prompt = GUARDRAIL_VALIDATION_PROMPT.format(
-                profile_data=json.dumps(validation_data, indent=2, default=str)
-            )
-            
-            response = self.llm.generate(prompt)
-            response = self._extract_json(response)
-            validation_report = json.loads(response)
-            
-            state["validation_report"] = validation_report
-            state["is_validated"] = validation_report.get("is_valid", False)
-            
-            # Update profile validation status
-            profile.is_validated = state["is_validated"]
-            self.profile_repository.update(profile)
-            
-            state["error"] = None
-            
-        except Exception as e:
-            state["error"] = f"Validation failed: {str(e)}"
-            state["current_step"] = "error"
+        trace_id = state.get("langfuse_trace_id")
+        span_context = self._create_span_context("validate", trace_id)
+        
+        # Use span context manager - OpenTelemetry context will be propagated to LLM calls
+        with span_context:
+            try:
+                state["current_step"] = "validating"
+                
+                profile = self.profile_repository.get_by_user_id(state["user_id"])
+                if not profile:
+                    raise ValueError(f"Profile not found for user {state['user_id']}")
+                
+                job_experiences = self.job_repository.get_by_user_id(state["user_id"])
+                courses = self.course_repository.get_by_user_id(state["user_id"])
+                academic_records = self.academic_repository.get_by_user_id(state["user_id"])
+                
+                # Prepare validation data for middleware
+                validation_data = {
+                    "profile": profile.model_dump(),
+                    "job_experiences": [j.model_dump() for j in job_experiences],
+                    "courses": [c.model_dump() for c in courses],
+                    "academic_records": [a.model_dump() for a in academic_records],
+                }
+                
+                # Guardrails validation using LLM
+                prompt = GUARDRAIL_VALIDATION_PROMPT.format(
+                    profile_data=json.dumps(validation_data, indent=2, default=str)
+                )
+                
+                response = self.llm.generate(prompt, trace_id=trace_id)
+                response = self._extract_json(response)
+                validation_report = json.loads(response)
+                
+                state["validation_report"] = validation_report
+                state["is_validated"] = validation_report.get("is_valid", False)
+                
+                # Update profile validation status
+                profile.is_validated = state["is_validated"]
+                self.profile_repository.update(profile)
+                
+                state["error"] = None
+                
+                # Set span attributes for success
+                from opentelemetry import trace
+                span = trace.get_current_span()
+                if span and span.is_recording():
+                    span.set_attribute("status", "success")
+                    span.set_attribute("is_valid", str(state["is_validated"]))
+                
+            except Exception as e:
+                state["error"] = f"Validation failed: {str(e)}"
+                state["current_step"] = "error"
+                # Set span attributes for error
+                from opentelemetry import trace
+                span = trace.get_current_span()
+                if span and span.is_recording():
+                    span.set_attribute("status", "error")
+                    span.set_attribute("error", str(e))
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
         
         return state
 
@@ -550,43 +715,62 @@ class WorkflowGraph:
         if state["error"]:
             return state
         
-        try:
-            state["current_step"] = "generating_cv"
-            
-            profile = self.profile_repository.get_by_user_id(state["user_id"])
-            if not profile:
-                raise ValueError(f"Profile not found for user {state['user_id']}")
-            
-            job_experiences = self.job_repository.get_by_user_id(state["user_id"])
-            courses = self.course_repository.get_by_user_id(state["user_id"])
-            academic_records = self.academic_repository.get_by_user_id(state["user_id"])
-            
-            # Format data for CV generation
-            job_experiences_text = self._format_job_experiences([j.model_dump() for j in job_experiences])
-            academic_records_text = self._format_academic_records([a.model_dump() for a in academic_records])
-            courses_text = self._format_courses([c.model_dump() for c in courses])
-            skills = self._extract_skills([j.model_dump() for j in job_experiences], [c.model_dump() for c in courses])
-            languages_text = self._format_languages(profile.languages or [])
-            
-            prompt = CV_GENERATION_PROMPT.format(
-                career_goals=profile.career_goals or "Not specified",
-                current_location=profile.current_location or "Not specified",
-                desired_job_locations=", ".join(profile.desired_job_locations or []),
-                job_experiences=job_experiences_text,
-                academic_records=academic_records_text,
-                courses=courses_text,
-                skills=", ".join(skills),
-                languages=languages_text,
-                additional_info=profile.additional_info or "",
-            )
-            
-            cv_content = self.llm.generate(prompt)
-            state["generated_cv"] = cv_content.strip()
-            state["error"] = None
-            
-        except Exception as e:
-            state["error"] = f"CV generation failed: {str(e)}"
-            state["current_step"] = "error"
+        trace_id = state.get("langfuse_trace_id")
+        span_context = self._create_span_context("generate_cv", trace_id, {"product_type": "cv"})
+        
+        # Use span context manager - OpenTelemetry context will be propagated to LLM calls
+        with span_context:
+            try:
+                state["current_step"] = "generating_cv"
+                
+                profile = self.profile_repository.get_by_user_id(state["user_id"])
+                if not profile:
+                    raise ValueError(f"Profile not found for user {state['user_id']}")
+                
+                job_experiences = self.job_repository.get_by_user_id(state["user_id"])
+                courses = self.course_repository.get_by_user_id(state["user_id"])
+                academic_records = self.academic_repository.get_by_user_id(state["user_id"])
+                
+                # Format data for CV generation
+                job_experiences_text = self._format_job_experiences([j.model_dump() for j in job_experiences])
+                academic_records_text = self._format_academic_records([a.model_dump() for a in academic_records])
+                courses_text = self._format_courses([c.model_dump() for c in courses])
+                skills = self._extract_skills([j.model_dump() for j in job_experiences], [c.model_dump() for c in courses])
+                languages_text = self._format_languages(profile.languages or [])
+                
+                prompt = CV_GENERATION_PROMPT.format(
+                    career_goals=profile.career_goals or "Not specified",
+                    current_location=profile.current_location or "Not specified",
+                    desired_job_locations=", ".join(profile.desired_job_locations or []),
+                    job_experiences=job_experiences_text,
+                    academic_records=academic_records_text,
+                    courses=courses_text,
+                    skills=", ".join(skills),
+                    languages=languages_text,
+                    additional_info=profile.additional_info or "",
+                )
+                
+                cv_content = self.llm.generate(prompt, trace_id=trace_id)
+                state["generated_cv"] = cv_content.strip()
+                state["error"] = None
+                
+                # Set span attributes for success
+                from opentelemetry import trace
+                span = trace.get_current_span()
+                if span and span.is_recording():
+                    span.set_attribute("status", "success")
+                    span.set_attribute("has_content", str(bool(cv_content)))
+                
+            except Exception as e:
+                state["error"] = f"CV generation failed: {str(e)}"
+                state["current_step"] = "error"
+                # Set span attributes for error
+                from opentelemetry import trace
+                span = trace.get_current_span()
+                if span and span.is_recording():
+                    span.set_attribute("status", "error")
+                    span.set_attribute("error", str(e))
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
         
         return state
     
@@ -749,49 +933,68 @@ class WorkflowGraph:
         if state.get("error"):
             return state
         
-        try:
-            state["current_step"] = "generating_linkedin_export"
-            
-            profile = self.profile_repository.get_by_user_id(state["user_id"])
-            if not profile:
-                raise ValueError(f"Profile not found for user {state['user_id']}")
-            
-            job_experiences = self.job_repository.get_by_user_id(state["user_id"])
-            courses = self.course_repository.get_by_user_id(state["user_id"])
-            academic_records = self.academic_repository.get_by_user_id(state["user_id"])
-            
-            # Determine current role
-            current_role = "Not specified"
-            if job_experiences:
-                current_job = job_experiences[0]
-                current_role = f"{current_job.position} at {current_job.company_name}"
-            
-            # Format data
-            job_experiences_text = self._format_job_experiences([j.model_dump() for j in job_experiences])
-            academic_records_text = self._format_academic_records([a.model_dump() for a in academic_records])
-            skills = self._extract_skills([j.model_dump() for j in job_experiences], [c.model_dump() for c in courses])
-            languages_text = self._format_languages(profile.languages or [])
-            
-            prompt = LINKEDIN_EXPORT_PROMPT.format(
-                career_goals=profile.career_goals or "Not specified",
-                current_role=current_role,
-                current_location=profile.current_location or "Not specified",
-                skills=", ".join(skills),
-                job_experiences=job_experiences_text,
-                academic_records=academic_records_text,
-                languages=languages_text,
-            )
-            
-            response = self.llm.generate(prompt)
-            response = self._extract_json(response)
-            linkedin_export = json.loads(response)
-            
-            state["generated_linkedin_export"] = linkedin_export
-            state["error"] = None
-            
-        except Exception as e:
-            state["error"] = f"LinkedIn export generation failed: {str(e)}"
-            state["current_step"] = "error"
+        trace_id = state.get("langfuse_trace_id")
+        span_context = self._create_span_context("generate_linkedin_export", trace_id, {"product_type": "linkedin_export"})
+        
+        # Use span context manager - OpenTelemetry context will be propagated to LLM calls
+        with span_context:
+            try:
+                state["current_step"] = "generating_linkedin_export"
+                
+                profile = self.profile_repository.get_by_user_id(state["user_id"])
+                if not profile:
+                    raise ValueError(f"Profile not found for user {state['user_id']}")
+                
+                job_experiences = self.job_repository.get_by_user_id(state["user_id"])
+                courses = self.course_repository.get_by_user_id(state["user_id"])
+                academic_records = self.academic_repository.get_by_user_id(state["user_id"])
+                
+                # Determine current role
+                current_role = "Not specified"
+                if job_experiences:
+                    current_job = job_experiences[0]
+                    current_role = f"{current_job.position} at {current_job.company_name}"
+                
+                # Format data
+                job_experiences_text = self._format_job_experiences([j.model_dump() for j in job_experiences])
+                academic_records_text = self._format_academic_records([a.model_dump() for a in academic_records])
+                skills = self._extract_skills([j.model_dump() for j in job_experiences], [c.model_dump() for c in courses])
+                languages_text = self._format_languages(profile.languages or [])
+                
+                prompt = LINKEDIN_EXPORT_PROMPT.format(
+                    career_goals=profile.career_goals or "Not specified",
+                    current_role=current_role,
+                    current_location=profile.current_location or "Not specified",
+                    skills=", ".join(skills),
+                    job_experiences=job_experiences_text,
+                    academic_records=academic_records_text,
+                    languages=languages_text,
+                )
+                
+                response = self.llm.generate(prompt, trace_id=trace_id)
+                response = self._extract_json(response)
+                linkedin_export = json.loads(response)
+                
+                state["generated_linkedin_export"] = linkedin_export
+                state["error"] = None
+                
+                # Set span attributes for success
+                from opentelemetry import trace
+                span = trace.get_current_span()
+                if span and span.is_recording():
+                    span.set_attribute("status", "success")
+                    span.set_attribute("has_content", str(bool(linkedin_export)))
+                
+            except Exception as e:
+                state["error"] = f"LinkedIn export generation failed: {str(e)}"
+                state["current_step"] = "error"
+                # Set span attributes for error
+                from opentelemetry import trace
+                span = trace.get_current_span()
+                if span and span.is_recording():
+                    span.set_attribute("status", "error")
+                    span.set_attribute("error", str(e))
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
         
         return state
 
@@ -968,15 +1171,44 @@ class WorkflowGraph:
         return profile_dict
     
     def _extract_json(self, text: str) -> str:
-        """Extract JSON from text."""
+        """Extract JSON from text, handling markdown code blocks and extra text."""
         text = text.strip()
+        
+        # Remove markdown code blocks
         if text.startswith("```json"):
             text = text[7:]
         elif text.startswith("```"):
             text = text[3:]
         if text.endswith("```"):
             text = text[:-3]
-        return text.strip()
+        text = text.strip()
+        
+        # Try to find JSON object boundaries (handle extra text before/after)
+        # Look for first { and last matching } - handle nested objects
+        first_brace = text.find('{')
+        if first_brace == -1:
+            # No JSON object found, return as-is
+            return text
+        
+        # Find matching closing brace (handle nested objects)
+        brace_count = 0
+        last_brace = -1
+        for i in range(first_brace, len(text)):
+            if text[i] == '{':
+                brace_count += 1
+            elif text[i] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    last_brace = i
+                    break
+        
+        if last_brace == -1 or last_brace <= first_brace:
+            # Invalid JSON structure, return as-is
+            return text
+        
+        # Extract just the JSON object
+        json_str = text[first_brace:last_brace + 1]
+        return json_str.strip()
 
     def _structure_parsed_data(self, parsed_data: dict) -> dict:
         """Structure parsed data into domain models format."""
@@ -1051,6 +1283,9 @@ class WorkflowGraph:
             "job_experiences": job_experiences,
             "courses": courses,
             "academic_records": academic_records,
+            # Include user info so it's available in save_draft_node
+            "user_email": user_email,
+            "user_name": user_name,
         }
 
     def _parse_date(self, date_str: str | None) -> date | None:
@@ -1139,18 +1374,33 @@ class WorkflowGraph:
             formatted.append(lang_text)
         return ", ".join(formatted)
 
-    def run(self, initial_state: dict, config: dict | None = None) -> dict:
+    def run(self, initial_state: dict, config: dict | None = None, trace_id: str | None = None) -> dict:
         """
         Run the workflow graph with initial state.
         
         Args:
             initial_state: Initial state dictionary
             config: Optional LangGraph config (for checkpointer thread_id, etc.)
+            trace_id: Optional Langfuse trace ID for unified tracing
             
         Returns:
             Final state dictionary
         """
         user_id = initial_state.get("user_id")
+        trace_id = trace_id or initial_state.get("langfuse_trace_id")
+        
+        # If we have a user_id and no trace_id, try to get it from stored trace_ids
+        if user_id and not trace_id:
+            trace_id = self._user_trace_ids.get(user_id)
+        
+        # Store trace_id for use in nodes
+        if trace_id:
+            self._current_trace_id = trace_id
+        
+        # Store trace_id by user_id for later retrieval (e.g., during validation)
+        if user_id and trace_id:
+            self._user_trace_ids[user_id] = trace_id
+        
         state = WorkflowState(
             user_id=user_id,
             input_type=initial_state["input_type"],
@@ -1179,6 +1429,7 @@ class WorkflowGraph:
             product_id=None,
             needs_human_review=False,
             human_decision=initial_state.get("human_decision"),
+            langfuse_trace_id=trace_id,
             error=None,
             current_step="start",
         )
@@ -1208,13 +1459,10 @@ class WorkflowGraph:
     
     def get_state(self, thread_id: str) -> dict | None:
         """Get current workflow state from checkpointer."""
-        try:
-            config = {"configurable": {"thread_id": thread_id}}
-            # Get the latest checkpoint
-            # Note: This is a simplified version - actual implementation depends on checkpointer API
-            return None
-        except Exception:
-            return None
+        # Note: MemorySaver checkpointer API is complex, so for now we rely on
+        # the _user_trace_ids dict for trace_id retrieval.
+        # This method can be enhanced later to properly access checkpointer state.
+        return None
     
     def resume_workflow(self, thread_id: str, human_decision: str, config: dict | None = None) -> dict:
         """
