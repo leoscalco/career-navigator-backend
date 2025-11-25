@@ -185,22 +185,8 @@ class WorkflowService:
         if not profile:
             raise ValueError(f"Profile not found for user {user_id}")
         
-        # Get all user data for validation
-        job_experiences = self.job_repository.get_by_user_id(user_id)
-        courses = self.course_repository.get_by_user_id(user_id)
-        academic_records = self.academic_repository.get_by_user_id(user_id)
-        
-        # Prepare validation data
-        validation_data = {
-            "profile": profile.model_dump(),
-            "job_experiences": [j.model_dump() for j in job_experiences],
-            "courses": [c.model_dump() for c in courses],
-            "academic_records": [a.model_dump() for a in academic_records],
-        }
-        
-        # Run validation using workflow graph to ensure it's part of the same trace
-        # Get trace_id from profile if available, or create a new one
-        # For now, we'll create a new trace for validation, but ideally we'd store trace_id in profile
+        # Try to get trace_id from workflow state (checkpointer) if available
+        # This allows us to link validation to the original CV parsing trace
         from langfuse import Langfuse
         from career_navigator.config import settings
         from opentelemetry import trace
@@ -211,16 +197,36 @@ class WorkflowService:
             host=settings.LANGFUSE_HOST,
         )
         
+        # Try to get trace_id from stored user trace_ids (set during CV parsing)
+        trace_id = self.workflow_graph._user_trace_ids.get(user_id)
+        
+        # If not found, try to get from workflow state (checkpointer)
+        if not trace_id:
+            try:
+                thread_id = f"user_{user_id}"
+                workflow_state = self.workflow_graph.get_state(thread_id)
+                if workflow_state:
+                    trace_id = workflow_state.get("langfuse_trace_id")
+            except Exception:
+                pass
+        
+        # If still not found, try to get from the workflow's current trace
+        if not trace_id:
+            trace_id = self.workflow_graph._current_trace_id
+        
+        # If still no trace_id, create a new one (fallback)
+        if not trace_id:
+            trace_id = langfuse_client.create_trace_id()
+        
         # Create trace using OpenTelemetry tracer
         tracer = langfuse_client._otel_tracer
-        trace_id = langfuse_client.create_trace_id()
         
-        # Start a new trace for validation - this ensures proper trace context
+        # Start trace for validation - use the same trace_id from CV parsing if available
         with tracer.start_as_current_span(
             "profile_validation",
             attributes={
                 "langfuse.trace.name": "profile_validation",
-                "langfuse.trace.id": trace_id,
+                "langfuse.trace.id": trace_id,  # Use the same trace_id from CV parsing
                 "langfuse.user.id": str(user_id),
                 "linked_to_profile": str(profile.id),
             },
@@ -234,16 +240,22 @@ class WorkflowService:
                 "input_type": "cv",  # Doesn't matter for validation
                 "is_confirmed": True,  # Skip confirmation step
                 "is_validated": False,  # Will be set by validation
-                "langfuse_trace_id": trace_id,  # Store trace ID in state for nodes to use
+                "langfuse_trace_id": trace_id,  # Use the same trace_id
             }
             
-            # Run just the validate node through the workflow graph
-            # This ensures it uses the same trace context
+            # Run workflow graph - it will route: parse (skip) -> save_draft (skip) -> wait_confirmation (skip) -> validate
             result = self.workflow_graph.run(initial_state, trace_id=trace_id)
         
         # Extract validation report from result
         validation_report = result.get("validation_report")
         if not validation_report:
+            # Check if there's an error in the result
+            if result.get("error"):
+                error_msg = result["error"]
+                # Check if it's a JSON parsing error
+                if "extra data" in error_msg.lower() or "json" in error_msg.lower():
+                    raise ValueError(f"Validation failed: Could not parse validation response. {error_msg}")
+                raise ValueError(f"Validation failed: {error_msg}")
             raise ValueError("Validation failed: No validation report generated")
         
         return validation_report

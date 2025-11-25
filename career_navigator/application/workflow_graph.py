@@ -107,6 +107,8 @@ class WorkflowGraph:
         # Langfuse client for tracing (initialized lazily)
         self._langfuse_client = None
         self._current_trace_id = None
+        # Store trace_id by user_id for unified tracing across workflow steps
+        self._user_trace_ids: dict[int, str] = {}
         
         # Build the graph
         self.graph = self._build_graph()
@@ -415,13 +417,13 @@ class WorkflowGraph:
                 has_goals = bool(parsed_data.get("career_goals") or parsed_data.get("short_term_goals") or parsed_data.get("long_term_goals"))
                 
                 if has_experience and has_goals:
-                    user_group = UserGroup.EXPERIENCED_CONTINUING
+                    updated_user_group = UserGroup.EXPERIENCED_CONTINUING
                 elif has_experience and not has_goals:
-                    user_group = UserGroup.EXPERIENCED_CHANGING
+                    updated_user_group = UserGroup.EXPERIENCED_CHANGING
                 elif not has_experience and has_goals:
-                    user_group = UserGroup.INEXPERIENCED_WITH_GOAL
+                    updated_user_group = UserGroup.INEXPERIENCED_WITH_GOAL
                 else:
-                    user_group = UserGroup.INEXPERIENCED_NO_GOAL
+                    updated_user_group = UserGroup.INEXPERIENCED_NO_GOAL
                 
                 # Update username if we have a new name from CV
                 username = existing_user.username
@@ -437,7 +439,7 @@ class WorkflowGraph:
                     id=existing_user.id,
                     email=user_email or existing_user.email,
                     username=username,
-                    user_group=user_group,
+                    user_group=updated_user_group,
                 )
                 self.user_repository.update(updated_user)
                 user_id = existing_user.id
@@ -1169,15 +1171,44 @@ class WorkflowGraph:
         return profile_dict
     
     def _extract_json(self, text: str) -> str:
-        """Extract JSON from text."""
+        """Extract JSON from text, handling markdown code blocks and extra text."""
         text = text.strip()
+        
+        # Remove markdown code blocks
         if text.startswith("```json"):
             text = text[7:]
         elif text.startswith("```"):
             text = text[3:]
         if text.endswith("```"):
             text = text[:-3]
-        return text.strip()
+        text = text.strip()
+        
+        # Try to find JSON object boundaries (handle extra text before/after)
+        # Look for first { and last matching } - handle nested objects
+        first_brace = text.find('{')
+        if first_brace == -1:
+            # No JSON object found, return as-is
+            return text
+        
+        # Find matching closing brace (handle nested objects)
+        brace_count = 0
+        last_brace = -1
+        for i in range(first_brace, len(text)):
+            if text[i] == '{':
+                brace_count += 1
+            elif text[i] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    last_brace = i
+                    break
+        
+        if last_brace == -1 or last_brace <= first_brace:
+            # Invalid JSON structure, return as-is
+            return text
+        
+        # Extract just the JSON object
+        json_str = text[first_brace:last_brace + 1]
+        return json_str.strip()
 
     def _structure_parsed_data(self, parsed_data: dict) -> dict:
         """Structure parsed data into domain models format."""
@@ -1358,8 +1389,17 @@ class WorkflowGraph:
         user_id = initial_state.get("user_id")
         trace_id = trace_id or initial_state.get("langfuse_trace_id")
         
+        # If we have a user_id and no trace_id, try to get it from stored trace_ids
+        if user_id and not trace_id:
+            trace_id = self._user_trace_ids.get(user_id)
+        
         # Store trace_id for use in nodes
-        self._current_trace_id = trace_id
+        if trace_id:
+            self._current_trace_id = trace_id
+        
+        # Store trace_id by user_id for later retrieval (e.g., during validation)
+        if user_id and trace_id:
+            self._user_trace_ids[user_id] = trace_id
         
         state = WorkflowState(
             user_id=user_id,
@@ -1419,13 +1459,10 @@ class WorkflowGraph:
     
     def get_state(self, thread_id: str) -> dict | None:
         """Get current workflow state from checkpointer."""
-        try:
-            config = {"configurable": {"thread_id": thread_id}}
-            # Get the latest checkpoint
-            # Note: This is a simplified version - actual implementation depends on checkpointer API
-            return None
-        except Exception:
-            return None
+        # Note: MemorySaver checkpointer API is complex, so for now we rely on
+        # the _user_trace_ids dict for trace_id retrieval.
+        # This method can be enhanced later to properly access checkpointer state.
+        return None
     
     def resume_workflow(self, thread_id: str, human_decision: str, config: dict | None = None) -> dict:
         """
