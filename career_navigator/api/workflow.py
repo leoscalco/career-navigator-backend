@@ -16,6 +16,8 @@ from career_navigator.application.workflow_service import WorkflowService
 from career_navigator.api.schemas.product import ProductResponse
 from career_navigator.infrastructure.document_parser import DocumentParser
 from career_navigator.infrastructure.linkedin_api import LinkedInAPIClient, LinkedInAPIError
+from career_navigator.api.auth import get_current_user
+from career_navigator.domain.models.user import User as DomainUser
 
 router = APIRouter(prefix="/workflow", tags=["Workflow"])
 
@@ -127,8 +129,9 @@ def parse_cv(
 @router.post("/parse-cv-file", response_model=ParseResponse, status_code=status.HTTP_201_CREATED)
 async def parse_cv_file(
     file: UploadFile = File(..., description="CV file (PDF, DOCX, or TXT)"),
-    user_id: Optional[int] = Form(None, description="Optional User ID. If not provided, user will be created from CV data."),
+    user_id: Optional[int] = Form(None, description="Optional User ID. If not provided, uses authenticated user's ID."),
     linkedin_url: Optional[str] = Form(None, description="Optional LinkedIn profile URL"),
+    current_user: DomainUser = Depends(get_current_user),
     workflow_service: WorkflowService = Depends(get_workflow_service),
 ):
     """
@@ -187,9 +190,12 @@ async def parse_cv_file(
                 detail="Could not extract text from the document. Please ensure the file contains readable text.",
             )
         
+        # Use authenticated user's ID if not provided
+        effective_user_id = user_id if user_id is not None else current_user.id
+        
         # Parse CV using workflow service
         result = workflow_service.parse_and_save_cv(
-            user_id=user_id,  # Can be None - will be created from CV
+            user_id=effective_user_id,
             cv_content=cv_content,
             linkedin_url=linkedin_url,
         )

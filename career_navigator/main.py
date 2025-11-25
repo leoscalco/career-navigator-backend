@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from career_navigator.api import health, career
 from career_navigator.api import (
+    auth,
     users,
     profiles,
     job_experiences,
@@ -36,6 +37,9 @@ app.add_middleware(
 # Health and Career endpoints
 app.include_router(health.router)
 app.include_router(career.router)
+
+# Authentication endpoints
+app.include_router(auth.router)
 
 # CRUD endpoints organized by table
 app.include_router(users.router)

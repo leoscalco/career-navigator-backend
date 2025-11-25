@@ -9,6 +9,12 @@ class User(BaseModel):
     email: str
     username: Optional[str] = None
     user_group: UserGroup
+    password_hash: Optional[str] = None
+    is_active: bool = True
+    is_verified: bool = False
+    oauth_provider: Optional[str] = None
+    oauth_provider_id: Optional[str] = None
+    oauth_access_token: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
