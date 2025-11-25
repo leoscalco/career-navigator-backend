@@ -60,6 +60,18 @@ class AuthService:
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
             return payload
-        except JWTError:
+        except JWTError as e:
+            # Log the specific error for debugging
+            import logging
+            logger = logging.getLogger(__name__)
+            error_msg = str(e)
+            logger.warning(f"JWT verification failed: {error_msg}")
+            
+            # Check for specific error types
+            if "expired" in error_msg.lower() or "exp" in error_msg.lower():
+                logger.info("Token has expired")
+            elif "signature" in error_msg.lower():
+                logger.warning("Token signature verification failed - SECRET_KEY mismatch?")
+            
             return None
 

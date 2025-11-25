@@ -15,6 +15,7 @@ class ProfileCreate(BaseModel):
     linkedin_profile_url: Optional[str] = None
     linkedin_profile_data: Optional[Dict[str, Any]] = None
     life_profile: Optional[str] = None
+    cv_email: Optional[str] = None  # Email from CV, separate from account email
     age: Optional[int] = None
     birth_country: Optional[str] = None
     birth_city: Optional[str] = None
@@ -34,6 +35,7 @@ class ProfileUpdate(BaseModel):
     linkedin_profile_url: Optional[str] = None
     linkedin_profile_data: Optional[Dict[str, Any]] = None
     life_profile: Optional[str] = None
+    cv_email: Optional[str] = None  # Email from CV, separate from account email
     age: Optional[int] = None
     birth_country: Optional[str] = None
     birth_city: Optional[str] = None
@@ -57,6 +59,7 @@ class ProfileResponse(BaseModel):
     linkedin_profile_url: Optional[str]
     linkedin_profile_data: Optional[Dict[str, Any]]
     life_profile: Optional[str]
+    cv_email: Optional[str] = None  # Email from CV, separate from account email
     age: Optional[int]
     birth_country: Optional[str]
     birth_city: Optional[str]
@@ -70,8 +73,7 @@ class ProfileResponse(BaseModel):
     updated_at: datetime
     # User information (from User model) - populated by endpoint
     name: Optional[str] = None
-    email: Optional[str] = None
+    email: Optional[str] = None  # Account email (for login), separate from cv_email
 
     class Config:
         from_attributes = True
-

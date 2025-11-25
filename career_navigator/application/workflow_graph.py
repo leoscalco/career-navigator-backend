@@ -411,6 +411,9 @@ class WorkflowGraph:
             
             if existing_user:
                 # Update existing user with new information from CV
+                # IMPORTANT: Do NOT update the user's account email - keep it separate from CV email
+                # The CV email will be stored in the profile's cv_email field
+                
                 # Determine user_group based on experience
                 job_experiences = parsed_data.get("job_experiences", [])
                 has_experience = len(job_experiences) > 0
@@ -426,101 +429,43 @@ class WorkflowGraph:
                     updated_user_group = UserGroup.INEXPERIENCED_NO_GOAL
                 
                 # Update username if we have a new name from CV
+                # IMPORTANT: Check for uniqueness to avoid conflicts
                 username = existing_user.username
                 if user_name and user_name.strip():
                     # Preserve the original name structure, just replace spaces with underscores for DB
-                    username = "".join(c for c in user_name if c.isalnum() or c in [" ", "_", "-", ".", "'"])[:100].strip()
-                    username = username.replace(" ", "_")
-                    if not username:
-                        username = existing_user.username or (user_email.split("@")[0] if user_email else None)
+                    base_username = "".join(c for c in user_name if c.isalnum() or c in [" ", "_", "-", ".", "'"])[:100].strip()
+                    base_username = base_username.replace(" ", "_")
+                    if not base_username:
+                        # Keep existing username if name parsing fails
+                        username = existing_user.username or (existing_user.email.split("@")[0] if existing_user.email else None)
+                    else:
+                        # Check if username already exists for a different user
+                        all_users = self.user_repository.get_all()
+                        existing_usernames = {u.username for u in all_users if u.username and u.id != existing_user.id}
+                        
+                        username = base_username
+                        if username in existing_usernames:
+                            # Username conflict - append number to make it unique
+                            counter = 1
+                            while f"{base_username}_{counter}" in existing_usernames:
+                                counter += 1
+                            username = f"{base_username}_{counter}"
                 
-                # Update user with new information
+                # Update user with new information (but keep account email unchanged)
+                # IMPORTANT: Do NOT update the user's account email - keep it separate from CV email
                 updated_user = DomainUser(
                     id=existing_user.id,
-                    email=user_email or existing_user.email,
+                    email=existing_user.email,  # Keep account email - don't change it
                     username=username,
                     user_group=updated_user_group,
                 )
                 self.user_repository.update(updated_user)
                 user_id = existing_user.id
             else:
-                # Create new user
-                if not user_email:
-                    # Generate placeholder email if not found
-                    cv_content = state.get('cv_content') or state.get('linkedin_data') or ''
-                    content_hash = abs(hash(str(cv_content)[:50]))
-                    user_email = f"user_{content_hash}@temp.careernavigator.com"
-                
-                # Determine user_group based on experience (default to inexperienced_no_goal)
-                user_group: UserGroup
-                
-                # Try to determine user group from parsed data
-                job_experiences = parsed_data.get("job_experiences", [])
-                has_experience = len(job_experiences) > 0
-                has_goals = bool(parsed_data.get("career_goals") or parsed_data.get("short_term_goals") or parsed_data.get("long_term_goals"))
-                
-                if has_experience and has_goals:
-                    user_group = UserGroup.EXPERIENCED_CONTINUING
-                elif has_experience and not has_goals:
-                    user_group = UserGroup.EXPERIENCED_CHANGING
-                elif not has_experience and has_goals:
-                    user_group = UserGroup.INEXPERIENCED_WITH_GOAL
-                else:
-                    user_group = UserGroup.INEXPERIENCED_NO_GOAL
-                
-                # Use the actual name from CV as username (preserve the original name as much as possible)
-                # Replace spaces with underscores for database storage, but keep the original name structure
-                if user_name and user_name.strip():
-                    # Preserve the original name structure, just replace spaces with underscores for DB
-                    # Keep letters, numbers, hyphens, underscores, periods, and apostrophes
-                    username = "".join(c for c in user_name if c.isalnum() or c in [" ", "_", "-", ".", "'"])[:100].strip()
-                    # Replace spaces with underscores for database storage (we'll convert back for display)
-                    username = username.replace(" ", "_")
-                    if not username:
-                        username = user_email.split("@")[0]
-                else:
-                    # Fallback to email prefix if no name
-                    username = user_email.split("@")[0]
-                
-                # Try to create user with this username
-                # If it fails due to uniqueness constraint, we'll append a number
-                new_user = DomainUser(
-                    email=user_email,
-                    username=username,  # Use the actual name (minimally cleaned)
-                    user_group=user_group,
-                )
-                
-                # Try to create - if username conflict, append number
-                try:
-                    created_user = self.user_repository.create(new_user)
-                except Exception as e:
-                    # If email or username already exists, try with appended number
-                    if "unique" in str(e).lower() or "duplicate" in str(e).lower() or "constraint" in str(e).lower():
-                        # Check if it's an email conflict - if so, get existing user
-                        existing_by_email = self.user_repository.get_by_email(user_email)
-                        if existing_by_email:
-                            # Use existing user
-                            created_user = existing_by_email
-                        else:
-                            # Username conflict, try with appended number
-                            base_username = username
-                            counter = 1
-                            while counter < 1000:
-                                username = f"{base_username}_{counter}"
-                                new_user.username = username
-                                try:
-                                    created_user = self.user_repository.create(new_user)
-                                    break
-                                except Exception:
-                                    counter += 1
-                            if counter >= 1000:
-                                # Fallback: use hash
-                                username = f"{base_username}_{abs(hash(user_email)) % 10000}"
-                                new_user.username = username
-                                created_user = self.user_repository.create(new_user)
-                    else:
-                        raise
-                user_id = created_user.id
+                # This should not happen when user is authenticated - user_id should always be provided
+                # But if it does, we need to use the authenticated user's email, not CV email
+                # For authenticated users, user_id should be set from current_user
+                raise ValueError("User must be authenticated. Please login first.")
             
             # Update state with user info
             state["user_id"] = user_id
@@ -538,6 +483,11 @@ class WorkflowGraph:
             profile_data["user_id"] = user_id
             profile_data["is_draft"] = True
             profile_data["is_validated"] = False
+            
+            # Store CV email separately (not used for login)
+            # The user_email from parsed_data is the email from CV, store it in cv_email
+            if user_email:
+                profile_data["cv_email"] = user_email
             
             # Set default career_goal_type if not provided
             if "career_goal_type" not in profile_data or not profile_data["career_goal_type"]:

@@ -15,6 +15,7 @@ class UserProfile(BaseModel):
     long_term_goals: Optional[str] = None
     job_search_locations: Optional[List[str]] = None  # Where user is searching for jobs
     cv_content: Optional[str] = None
+    cv_email: Optional[str] = None  # Email from CV (separate from account email, not used for login)
     linkedin_profile_url: Optional[str] = None
     linkedin_profile_data: Optional[Dict[str, Any]] = None
     life_profile: Optional[str] = None

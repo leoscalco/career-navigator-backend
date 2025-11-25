@@ -131,7 +131,7 @@ async def parse_cv_file(
     file: UploadFile = File(..., description="CV file (PDF, DOCX, or TXT)"),
     user_id: Optional[int] = Form(None, description="Optional User ID. If not provided, uses authenticated user's ID."),
     linkedin_url: Optional[str] = Form(None, description="Optional LinkedIn profile URL"),
-    current_user: DomainUser = Depends(get_current_user),
+    current_user: DomainUser = Depends(get_current_user),  # Requires Authorization: Bearer <token> header
     workflow_service: WorkflowService = Depends(get_workflow_service),
 ):
     """
