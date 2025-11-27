@@ -15,7 +15,9 @@ from career_navigator.config import settings
 import secrets
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
-security = HTTPBearer()
+# HTTPBearer with auto_error=True (default) - will raise 403 if no token provided
+# This is correct for protected endpoints
+security = HTTPBearer(auto_error=True)
 
 
 def get_user_repository(db: Session = Depends(get_db)) -> UserRepository:
@@ -28,32 +30,83 @@ def get_current_user(
     repository: UserRepository = Depends(get_user_repository),
 ) -> DomainUser:
     """Dependency to get current authenticated user."""
-    token = credentials.credentials
-    payload = AuthService.verify_token(token)
-    if payload is None:
+    try:
+        token = credentials.credentials
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing authentication token. Please include 'Authorization: Bearer <token>' header.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        payload = AuthService.verify_token(token)
+        if payload is None:
+            # Try to decode without verification to get more specific error
+            import logging
+            from jose import jwt as jose_jwt
+            logger = logging.getLogger(__name__)
+            try:
+                # Decode without verification to see what's wrong
+                unverified = jose_jwt.decode(token, options={"verify_signature": False})
+                logger.warning(f"Token decode without verification succeeded. User ID: {unverified.get('sub')}, Exp: {unverified.get('exp')}")
+                # Check if expired
+                from datetime import datetime
+                exp = unverified.get('exp')
+                if exp and datetime.utcnow().timestamp() > exp:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Authentication token has expired. Please login again.",
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+            except Exception as decode_error:
+                logger.warning(f"Token decode error: {str(decode_error)}")
+            
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired authentication token. Please login again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # JWT "sub" claim is stored as string, convert to int
+        user_id_str = payload.get("sub")
+        if user_id_str is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token payload: missing user ID",
+            )
+        try:
+            user_id: int = int(user_id_str)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token payload: user ID must be a number",
+            )
+        
+        user = repository.get_by_id(user_id)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"User {user_id} not found",
+            )
+        
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Inactive user",
+            )
+        
+        return user
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Log unexpected errors for debugging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Authentication error: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"},
+            detail=f"Authentication failed: {str(e)}",
         )
-    user_id: int = payload.get("sub")
-    if user_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-        )
-    user = repository.get_by_id(user_id)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-        )
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Inactive user",
-        )
-    return user
 
 
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
@@ -98,8 +151,8 @@ def register(
     
     created_user = repository.create(new_user)
     
-    # Create access token
-    access_token = AuthService.create_access_token(data={"sub": created_user.id, "email": created_user.email})
+    # Create access token - JWT requires "sub" to be a string
+    access_token = AuthService.create_access_token(data={"sub": str(created_user.id), "email": created_user.email})
     
     return Token(
         access_token=access_token,
@@ -140,8 +193,8 @@ def login(
             detail="Inactive user",
         )
     
-    # Create access token
-    access_token = AuthService.create_access_token(data={"sub": user.id, "email": user.email})
+    # Create access token - JWT requires "sub" to be a string
+    access_token = AuthService.create_access_token(data={"sub": str(user.id), "email": user.email})
     
     return Token(
         access_token=access_token,
@@ -160,6 +213,17 @@ def get_current_user_info(current_user: DomainUser = Depends(get_current_user)):
         "username": current_user.username,
         "is_verified": current_user.is_verified,
         "oauth_provider": current_user.oauth_provider,
+    }
+
+
+@router.get("/test-token")
+def test_token(current_user: DomainUser = Depends(get_current_user)):
+    """Test endpoint to verify token is being read correctly."""
+    return {
+        "success": True,
+        "user_id": current_user.id,
+        "email": current_user.email,
+        "message": "Token is valid and user is authenticated"
     }
 
 
@@ -360,8 +424,8 @@ async def oauth_callback(
         )
         user = repository.create(new_user)
     
-    # Create access token
-    access_token_jwt = AuthService.create_access_token(data={"sub": user.id, "email": user.email})
+    # Create access token - JWT requires "sub" to be a string
+    access_token_jwt = AuthService.create_access_token(data={"sub": str(user.id), "email": user.email})
     
     return Token(
         access_token=access_token_jwt,

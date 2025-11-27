@@ -83,6 +83,9 @@ class UserProfile(Base):
     linkedin_profile_data = Column(JSON)  # Stored LinkedIn data
     life_profile = Column(Text)  # Personal story, background
 
+    # Contact information from CV (separate from account email)
+    cv_email = Column(String(255), nullable=True)  # Email from CV, not used for login
+    
     # Demographics
     age = Column(Integer)
     birth_country = Column(String(100))

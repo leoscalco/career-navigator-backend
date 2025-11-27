@@ -29,6 +29,7 @@ class SQLAlchemyProfileRepository(ProfileRepository):
             linkedin_profile_url=profile.linkedin_profile_url,
             linkedin_profile_data=profile.linkedin_profile_data,
             life_profile=profile.life_profile,
+            cv_email=profile.cv_email,
             age=profile.age,
             birth_country=profile.birth_country,
             birth_city=profile.birth_city,
@@ -74,6 +75,8 @@ class SQLAlchemyProfileRepository(ProfileRepository):
         db_profile.linkedin_profile_url = profile.linkedin_profile_url
         db_profile.linkedin_profile_data = profile.linkedin_profile_data
         db_profile.life_profile = profile.life_profile
+        if profile.cv_email is not None:
+            db_profile.cv_email = profile.cv_email
         db_profile.age = profile.age
         db_profile.birth_country = profile.birth_country
         db_profile.birth_city = profile.birth_city
@@ -122,6 +125,7 @@ class SQLAlchemyProfileRepository(ProfileRepository):
             linkedin_profile_url=db_profile.linkedin_profile_url,
             linkedin_profile_data=db_profile.linkedin_profile_data,
             life_profile=db_profile.life_profile,
+            cv_email=db_profile.cv_email,
             age=db_profile.age,
             birth_country=db_profile.birth_country,
             birth_city=db_profile.birth_city,
