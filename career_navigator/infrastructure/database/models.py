@@ -58,6 +58,7 @@ class User(Base):
     courses = relationship("Course", back_populates="user", cascade="all, delete-orphan")
     academic_records = relationship("AcademicRecord", back_populates="user", cascade="all, delete-orphan")
     generated_products = relationship("GeneratedProduct", back_populates="user", cascade="all, delete-orphan")
+    roadmap_tasks = relationship("RoadmapTask", back_populates="user", cascade="all, delete-orphan")
 
 
 class UserProfile(Base):
@@ -198,11 +199,38 @@ class GeneratedProduct(Base):
     # Metadata
     generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     model_used = Column(String(100))  # Which LLM was used
-    prompt_used = Column(Text)  # Store the prompt for reproducibility
-
+    prompt_used = Column(Text, nullable=True)  # The prompt used to generate this product
+    
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
     user = relationship("User", back_populates="generated_products")
+    roadmap_tasks = relationship("RoadmapTask", back_populates="product", cascade="all, delete-orphan")
+
+
+class RoadmapTask(Base):
+    __tablename__ = "roadmap_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    product_id = Column(Integer, ForeignKey("generated_products.id"), nullable=True)  # Link to the product that contains this task
+    
+    # Task identification
+    plan_type = Column(String(20), nullable=False)  # '1y', '3y', '5y'
+    period = Column(String(50), nullable=False)  # 'Q1', 'Q2', 'Q3', 'Q4' for 1y, 'Year 1', 'Year 2', 'Year 3' for 3y, 'Foundation', 'Growth', 'Leadership' for 5y
+    task_type = Column(String(50), nullable=False)  # 'projects', 'networking', 'strategies', 'tips', 'milestones', 'goals', 'courses', etc.
+    task_content = Column(Text, nullable=False)  # The actual task text/content
+    task_index = Column(Integer, nullable=False)  # Index within the period/task_type array
+    
+    # Completion tracking
+    is_completed = Column(Boolean, default=False, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    user = relationship("User", back_populates="roadmap_tasks")
+    product = relationship("GeneratedProduct", back_populates="roadmap_tasks")
 

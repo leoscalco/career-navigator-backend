@@ -11,6 +11,7 @@ from career_navigator.api import (
     academics,
     products,
     workflow,
+    roadmap,
 )
 
 app = FastAPI(
@@ -51,3 +52,6 @@ app.include_router(products.router)
 
 # Workflow endpoints
 app.include_router(workflow.router)
+
+# Roadmap endpoints
+app.include_router(roadmap.router)
